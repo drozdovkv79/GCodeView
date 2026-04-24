@@ -63,6 +63,7 @@ class UltraFastParser:
 
             self.all_points = np.vstack(self.points).astype(np.float32)
             self.all_lines = np.concatenate(self.lines).astype(np.int32)
+
             return True
         except Exception as e:
             print(f"Error: {e}")
@@ -73,7 +74,6 @@ class UltraFastParser:
         start_idx = sum(len(p) for p in self.points)
         pts = np.array(path_points, dtype=np.float32)
         self.points.append(pts)
-
         n_pts = len(pts)
         indices = np.arange(start_idx, start_idx + n_pts)
         self.lines.append(np.hstack([[n_pts], indices]))
@@ -88,6 +88,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.parser = UltraFastParser()
         self.plotter = BackgroundPlotter(show=False)
         self.plotter.enable_anti_aliasing()
+        self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
         # self.plotter.disable_camera_reset()
         self.plotter.show_grid(
             color=(80, 80, 90), grid="back", location="outer", ticks="both"
@@ -102,7 +103,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout(central)
 
         panel = QtWidgets.QVBoxLayout()
-        btn_load = QtWidgets.QPushButton("📂 Загрузить файл")
+        btn_load = QtWidgets.QPushButton("Загрузить файл")
         btn_load.clicked.connect(self.load_file)
         panel.addWidget(btn_load)
 
@@ -114,7 +115,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.thick_slider.valueChanged.connect(self.update_appearance)
         panel.addWidget(self.thick_slider)
 
-        self.btn_color = QtWidgets.QPushButton("🎨 Цвет модели")
+        self.btn_color = QtWidgets.QPushButton("Цвет модели")
         self.btn_color.clicked.connect(self.change_color)
         panel.addWidget(self.btn_color)
 
@@ -129,8 +130,9 @@ class GCodeApp(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open G-code")
         if path:
             if self.parser.parse(path):
-                self.setWindowTitle(f"G-Code Viewer: {path}")
                 self.render_model()
+                n = len(self.parser.all_points)
+                self.setWindowTitle(f"G-Code Viewer: [{n}] {path}")
                 self.plotter.reset_camera()
 
     def render_model(self):

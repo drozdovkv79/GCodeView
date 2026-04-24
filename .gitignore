@@ -2,3 +2,5 @@
 260417_p-0.1_h3w6_pnl-01-flat.gcode
 260420_p-1.3_h3w6_pnl-03_test5.gcode
 __pycache__/GCodeViewr_Vista.cpython-314.pyc
+.DS_Store
+.zed/gvtest1.py
