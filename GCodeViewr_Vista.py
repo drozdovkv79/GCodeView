@@ -144,8 +144,8 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.tube_filter = vtk.vtkTubeFilter()
         self.tube_filter.SetInputData(line)
         self.tube_filter.SetRadius(1.5)
-        self.tube_filter.SetNumberOfSides(16)
-        self.tube_filter.SetCapping(False)
+        self.tube_filter.SetNumberOfSides(8)
+        self.tube_filter.SetCapping(True)
         self.tube_filter.Update()
         # 3. Оборачиваем результат в PyVista
         tube = pv.wrap(self.tube_filter.GetOutput())
