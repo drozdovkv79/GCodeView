@@ -6,7 +6,6 @@ import pyvista as pv
 import vtk
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QTextLine
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -17,10 +16,8 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QPushButton,
     QSlider,
-    QVBoxLayout,
 )
 from pyvistaqt import BackgroundPlotter
-from qtpy.QtWidgets import QLineEdit, QTextEdit
 
 
 class UltraFastParser:
@@ -105,13 +102,14 @@ class GCodeApp(QtWidgets.QMainWindow):
 
         self.parser = UltraFastParser()
         self.plotter = BackgroundPlotter(show=False)
-        self.plotter.disable_anti_aliasing()
-        # self.plotter.render_window.SetMultiSamples(0)  # Отключаем MSAA для скорости
+        # self.plotter.enable_anti_aliasing("msaa")
+        self.plotter.render_window.SetMultiSamples(2)  # Отключаем MSAA для скорости
         """Render time for False : 37.045 ms
-        Render time for fxaa  : 40.458 ms
-        Render time for msaa  : 42.566 ms
-        Render time for ssaa  : 51.450 ms"""
-
+        2 Render time for fxaa  : 40.458 ms
+        4 Render time for msaa  : 42.566 ms
+        8-32 Render time for ssaa  : 51.450 ms"""
+        # self.plotter.render_window.LineSmoothingOn()  # включить сглаживание линий.
+        # plotter.render_window.PointSmoothingOn()  # включить сглаживание точек.
         self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
         self.plotter.camera_position = "iso"  # xy, xz, yz, yx, zx, zy, iso
         # self.plotter.disable_camera_reset()
@@ -215,8 +213,13 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.xyz[axis] = edit_xyz
             # Добавляем ползунок
             slider = QSlider(Qt.Horizontal)
-            slider.setMinimum(-3000)
-            slider.setMaximum(3000)
+            len = 3000
+            if axis == "X":
+                len = 1000
+            elif axis == "Y":
+                len = 500
+            slider.setMinimum(len * -1)
+            slider.setMaximum(len)
             slider.setValue(0)
             slider.valueChanged.connect(self.update_position)
             input_layout.addWidget(slider, i, 2)
@@ -275,10 +278,10 @@ class GCodeApp(QtWidgets.QMainWindow):
         name = f"{shape_type.capitalize()}_{self.counter}"
 
         if shape_type == "cube":
-            mesh = pv.Cube(x_length=50, y_length=50, z_length=10)
+            mesh = pv.Cube(x_length=50, y_length=50, z_length=50)
             color = "orange"
         else:
-            mesh = pv.Sphere(radius=10)
+            mesh = pv.Sphere(radius=50)
             color = "magenta"
 
         actor = self.plotter.add_mesh(mesh, color=color, show_edges=True)
@@ -363,14 +366,12 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.xyz["hZ"].setText(f"{z}")
 
     def xyz_apply(self):
-        # self.sliders[axis].blockSignals(True) - блокировать все потом разблокировать
-        self.sliders["X"].setValue(int(self.xyz["X"].text().split(".")[0]))
-        self.sliders["Y"].setValue(int(self.xyz["Y"].text().split(".")[0]))
-        self.sliders["Z"].setValue(int(self.xyz["Z"].text().split(".")[0]))
-        self.sliders["hX"].setValue(int(self.xyz["hX"].text().split(".")[0]))
-        self.sliders["hY"].setValue(int(self.xyz["hY"].text().split(".")[0]))
-        self.sliders["hZ"].setValue(int(self.xyz["hZ"].text().split(".")[0]))
+        for i, axis in enumerate(["hX", "hY", "hZ", "X", "Y", "Z"]):
+            self.sliders[axis].blockSignals(True)
+            self.sliders[axis].setValue(int(self.xyz[axis].text().split(".")[0]))
+            self.sliders[axis].blockSignals(False)
         self.update_position()
+        self.update_size()
 
     def sync_sliders_with_actor(self):
         """Синхронизирует положение ползунков при смене объекта в списке"""
