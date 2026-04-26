@@ -1,5 +1,4 @@
 import sys
-from datetime import datetime, time
 
 import numpy as np
 import pyvista as pv
@@ -102,14 +101,16 @@ class GCodeApp(QtWidgets.QMainWindow):
 
         self.parser = UltraFastParser()
         self.plotter = BackgroundPlotter(show=False)
-        # self.plotter.enable_anti_aliasing("msaa")
+        self.plotter.background_color = "silver"
+        self.plotter.enable_anti_aliasing()
         self.plotter.render_window.SetMultiSamples(2)  # Отключаем MSAA для скорости
         """Render time for False : 37.045 ms
         2 Render time for fxaa  : 40.458 ms
         4 Render time for msaa  : 42.566 ms
         8-32 Render time for ssaa  : 51.450 ms"""
         # self.plotter.render_window.LineSmoothingOn()  # включить сглаживание линий.
-        # plotter.render_window.PointSmoothingOn()  # включить сглаживание точек.
+        # self.plotter.render_window.PointSmoothingOn()  # включить сглаживание точек.
+        self.plotter.show()
         self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
         self.plotter.camera_position = "iso"  # xy, xz, yz, yx, zx, zy, iso
         # self.plotter.disable_camera_reset()
@@ -127,8 +128,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         btn_load.clicked.connect(self.load_file)
         panel.addWidget(btn_load)
 
-        panel1 = QtWidgets.QHBoxLayout(central)
-
+        panel1 = QHBoxLayout()
         # Метка для толщины линии
         self.thick_label = QtWidgets.QLabel("Толщина линии: ")
         panel1.addWidget(self.thick_label)
@@ -146,7 +146,6 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.thick_slider.setValue(30)
         self.thick_slider.valueChanged.connect(self.update_appearance)
         panel1.addWidget(self.thick_slider)
-
         panel.addLayout(panel1)
 
         self.btn_color = QtWidgets.QPushButton("Цвет модели")
@@ -154,17 +153,17 @@ class GCodeApp(QtWidgets.QMainWindow):
         panel.addWidget(self.btn_color)
 
         # zoom
-        input_layout = QGridLayout()
+        zoom_layout = QGridLayout()
         self.xyz["zoom"] = QLabel(f"zoom [1]:")
-        input_layout.addWidget(self.xyz["zoom"], 0, 0)
+        zoom_layout.addWidget(self.xyz["zoom"], 0, 0)
         slider = QSlider(Qt.Horizontal)
         slider.setMinimum(1)
         slider.setMaximum(60)
         slider.setValue(30)
         slider.valueChanged.connect(self.update_zoom)
-        input_layout.addWidget(slider, 0, 1)
+        zoom_layout.addWidget(slider, 0, 1)
         # Добавляем макеты в основной макет
-        panel.addLayout(input_layout)
+        panel.addLayout(zoom_layout)
 
         # Создаем кнопки
         buttons = ["zy", "xy", "yz", "yx", "xz", "zx", "iso"]
