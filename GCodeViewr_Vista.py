@@ -6,16 +6,19 @@ import pyvista as pv
 import vtk
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QTextLine
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSlider,
 )
 from pyvistaqt import BackgroundPlotter
+from qtpy.QtWidgets import QLineEdit, QTextEdit
 
 
 class UltraFastParser:
@@ -155,16 +158,25 @@ class GCodeApp(QtWidgets.QMainWindow):
 
         # --- Секция ползунков (X, Y, Z) ---
         self.sliders = {}
+        self.xyz = {}
         for axis in ["X", "Y", "Z"]:
             panel.addWidget(QLabel(f"Смещение по {axis}:"))
+            edit_xyz = QLineEdit("0.0")
+            panel.addWidget(edit_xyz)
+            self.xyz[axis] = edit_xyz
             slider = QSlider(Qt.Horizontal)
-            slider.setMinimum(-100)
-            slider.setMaximum(100)
+            slider.setMinimum(-3000)
+            slider.setMaximum(3000)
             slider.setValue(0)
             slider.valueChanged.connect(self.update_position)
             panel.addWidget(slider)
             self.sliders[axis] = slider
-            btn_scr = QPushButton("ScreenShot")
+
+        btn_scr = QPushButton("Применить")
+        btn_scr.clicked.connect(self.xyz_apply)
+        panel.addWidget(btn_scr)
+
+        btn_scr = QPushButton("ScreenShot")
         btn_scr.clicked.connect(
             lambda: self.get_screenshot("/Users/drozdovkv/screen1.png")
         )
@@ -213,14 +225,20 @@ class GCodeApp(QtWidgets.QMainWindow):
         active_name = self.selector.currentText()
         if active_name in self.actors:
             # Получаем значения ползунков (делим на 10 для плавности)
-            x = self.sliders["X"].value() / 30.0
-            y = self.sliders["Y"].value() / 30.0
-            z = self.sliders["Z"].value() / 30.0
-
+            x = self.sliders["X"].value()
+            y = self.sliders["Y"].value()
+            z = self.sliders["Z"].value()
             # Устанавливаем позицию актора
             self.actors[active_name].position = (x, y, z)
-            # Принудительная перерисовка не требуется для BackgroundPlotter,
-            # но можно вызвать если заметны задержки: self.plotter.render()
+            self.xyz["X"].setText(f"{x}")
+            self.xyz["Y"].setText(f"{y}")
+            self.xyz["Z"].setText(f"{z}")
+
+    def xyz_apply(self):
+        self.sliders["X"].setValue(int(self.xyz["X"].text().split(".")[0]))
+        self.sliders["Y"].setValue(int(self.xyz["Y"].text().split(".")[0]))
+        self.sliders["Z"].setValue(int(self.xyz["Z"].text().split(".")[0]))
+        self.update_position()
 
     def sync_sliders_with_actor(self):
         """Синхронизирует положение ползунков при смене объекта в списке"""
