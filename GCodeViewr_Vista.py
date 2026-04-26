@@ -11,11 +11,13 @@ from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QSlider,
+    QVBoxLayout,
 )
 from pyvistaqt import BackgroundPlotter
 from qtpy.QtWidgets import QLineEdit, QTextEdit
@@ -98,19 +100,24 @@ class GCodeApp(QtWidgets.QMainWindow):
         # Словарь для хранения акторов (объектов на сцене)
         self.actors = {}
         self.counter = 0
+        self.sliders = {}
+        self.xyz = {}
 
         self.parser = UltraFastParser()
         self.plotter = BackgroundPlotter(show=False)
-        self.plotter.enable_anti_aliasing()
+        self.plotter.disable_anti_aliasing()
+        # self.plotter.render_window.SetMultiSamples(0)  # Отключаем MSAA для скорости
+        """Render time for False : 37.045 ms
+        Render time for fxaa  : 40.458 ms
+        Render time for msaa  : 42.566 ms
+        Render time for ssaa  : 51.450 ms"""
+
         self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
-        self.plotter.camera_position = "xy"
+        self.plotter.camera_position = "iso"  # xy, xz, yz, yx, zx, zy, iso
         # self.plotter.disable_camera_reset()
         self.plotter.show_grid(
             color=(80, 80, 90), grid="back", location="outer", ticks="both"
         )
-
-        # Включаем оптимизацию для macOS
-        self.plotter.render_window.SetMultiSamples(0)  # Отключаем MSAA для скорости
 
         # Настройка UI
         central = QtWidgets.QWidget()
@@ -122,17 +129,55 @@ class GCodeApp(QtWidgets.QMainWindow):
         btn_load.clicked.connect(self.load_file)
         panel.addWidget(btn_load)
 
+        panel1 = QtWidgets.QHBoxLayout(central)
+
+        # Метка для толщины линии
         self.thick_label = QtWidgets.QLabel("Толщина линии: ")
-        panel.addWidget(self.thick_label)
+        panel1.addWidget(self.thick_label)
+
+        # Текстовое поле для ввода значения толщины линии
+        self.thick_input = QtWidgets.QLineEdit()
+        self.thick_input.setFixedWidth(30)
+        self.thick_input.setText("30")
+        self.thick_input.editingFinished.connect(self.update_slider_from_input)
+        panel1.addWidget(self.thick_input)
+
+        # Слайдер для изменения толщины линии
         self.thick_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.thick_slider.setRange(1, 50)
+        self.thick_slider.setRange(1, 80)
         self.thick_slider.setValue(30)
         self.thick_slider.valueChanged.connect(self.update_appearance)
-        panel.addWidget(self.thick_slider)
+        panel1.addWidget(self.thick_slider)
+
+        panel.addLayout(panel1)
 
         self.btn_color = QtWidgets.QPushButton("Цвет модели")
         self.btn_color.clicked.connect(self.change_color)
         panel.addWidget(self.btn_color)
+
+        # zoom
+        input_layout = QGridLayout()
+        self.xyz["zoom"] = QLabel(f"zoom [1]:")
+        input_layout.addWidget(self.xyz["zoom"], 0, 0)
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(1)
+        slider.setMaximum(60)
+        slider.setValue(30)
+        slider.valueChanged.connect(self.update_zoom)
+        input_layout.addWidget(slider, 0, 1)
+        # Добавляем макеты в основной макет
+        panel.addLayout(input_layout)
+
+        # Создаем кнопки
+        buttons = ["zy", "xy", "yz", "yx", "xz", "zx", "iso"]
+        button_layout = QHBoxLayout()
+        for button_name in buttons:
+            button = QPushButton(button_name)
+            button.clicked.connect(
+                lambda _, name=button_name: self.set_camera_position(name)
+            )
+            button_layout.addWidget(button)
+        panel.addLayout(button_layout)
 
         # --- Секция добавления объектов ---
         panel.addWidget(QLabel("<b>Добавить объект:</b>"))
@@ -157,25 +202,47 @@ class GCodeApp(QtWidgets.QMainWindow):
         panel.addWidget(self.selector)
 
         # --- Секция ползунков (X, Y, Z) ---
-        self.sliders = {}
-        self.xyz = {}
-        for axis in ["X", "Y", "Z"]:
-            panel.addWidget(QLabel(f"Смещение по {axis}:"))
+        # Создаем макет для полей ввода
+        input_layout = QGridLayout()
+        # --- Секция ползунков (X, Y, Z) ---
+        for i, axis in enumerate(["X", "Y", "Z"]):
+            # Добавляем метку
+            input_layout.addWidget(QLabel(f"{axis}:"), i, 0)
+            # Добавляем поле ввода
             edit_xyz = QLineEdit("0.0")
-            panel.addWidget(edit_xyz)
+            edit_xyz.setFixedWidth(50)
+            input_layout.addWidget(edit_xyz, i, 1)
             self.xyz[axis] = edit_xyz
+            # Добавляем ползунок
             slider = QSlider(Qt.Horizontal)
             slider.setMinimum(-3000)
             slider.setMaximum(3000)
             slider.setValue(0)
             slider.valueChanged.connect(self.update_position)
-            panel.addWidget(slider)
+            input_layout.addWidget(slider, i, 2)
             self.sliders[axis] = slider
+            # размеры
+            edit_xyz = QLineEdit("0.0")
+            edit_xyz.setFixedWidth(50)
+            input_layout.addWidget(edit_xyz, i, 3)
+            self.xyz["h" + axis] = edit_xyz
+            slider = QSlider(Qt.Horizontal)
+            slider.setMinimum(1)
+            slider.setMaximum(3000)
+            slider.setValue(100)
+            slider.valueChanged.connect(self.update_size)
+            input_layout.addWidget(slider, i, 4)
+            self.sliders["h" + axis] = slider
 
+        # Добавляем макеты в основной макет
+        panel.addLayout(input_layout)
+
+        # Кнопка применения
         btn_scr = QPushButton("Применить")
         btn_scr.clicked.connect(self.xyz_apply)
         panel.addWidget(btn_scr)
 
+        # Сохранение экрана в файл
         btn_scr = QPushButton("ScreenShot")
         btn_scr.clicked.connect(
             lambda: self.get_screenshot("/Users/drozdovkv/screen1.png")
@@ -219,6 +286,32 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.selector.addItem(name)
         # Автоматически выбираем новый объект
         self.selector.setCurrentText(name)
+        self.plotter.reset_camera()
+
+    def set_camera_position(self, position_name):
+        camera_positions = {
+            "xy": [0, 1, 0],
+            "xz": [0, 0, 1],
+            "yz": [1, 0, 0],
+            "yx": [-1, 0, 0],
+            "zx": [0, 0, -1],
+            "zy": [0, -1, 0],
+            "iso": [1, 1, 1],
+        }
+
+        if position_name in camera_positions:
+            # self.plotter.camera_position = position_name
+            self.plotter.camera_position = camera_positions[position_name]
+            self.plotter.render()
+
+    def update_zoom(self, value):
+        # zoom = self.sliders["zoom"].value()
+        # Преобразуем значение ползунка в коэффициент масштабирования
+        scale_factor = value
+        self.xyz["zoom"].setText(f"zoom: [{scale_factor}]")
+        # Обновляем масштаб модели
+        self.plotter.camera.view_angle = scale_factor
+        self.plotter.render()
 
     def update_position(self):
         """Обновляет позицию выбранного объекта на основе ползунков"""
@@ -234,10 +327,49 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.xyz["Y"].setText(f"{y}")
             self.xyz["Z"].setText(f"{z}")
 
+    def resize_cube(self, mesh, x_len, y_len, z_len):
+        # Изменяет размер меша, масштабируя его координаты под конкретные длины сторон.
+        # Вычисляем текущие габариты (bounding box)
+        # bounds возвращает [xmin, xmax, ymin, ymax, zmin, zmax]
+        b = mesh.bounds
+        curr_x = b[1] - b[0]
+        curr_y = b[3] - b[2]
+        curr_z = b[5] - b[4]
+
+        # Чтобы избежать деления на ноль, если меш плоский
+        factors = [
+            x_len / curr_x if curr_x != 0 else 1,
+            y_len / curr_y if curr_y != 0 else 1,
+            z_len / curr_z if curr_z != 0 else 1,
+        ]
+        # Прямое изменение координат точек меша
+        mesh.points[:, 0] *= factors[0]  # X
+        mesh.points[:, 1] *= factors[1]  # Y
+        mesh.points[:, 2] *= factors[2]  # Z
+        return mesh
+
+    def update_size(self):
+        """Обновляет размер выбранного объекта на основе ползунков"""
+        active_name = self.selector.currentText()
+        if active_name in self.actors:
+            # Получаем значения ползунков (делим на 10 для плавности)
+            x = self.sliders["hX"].value()
+            y = self.sliders["hY"].value()
+            z = self.sliders["hZ"].value()
+            # Устанавливаем позицию актора
+            self.resize_cube(self.actors[active_name].mapper.dataset, x, y, z)
+            self.xyz["hX"].setText(f"{x}")
+            self.xyz["hY"].setText(f"{y}")
+            self.xyz["hZ"].setText(f"{z}")
+
     def xyz_apply(self):
+        # self.sliders[axis].blockSignals(True) - блокировать все потом разблокировать
         self.sliders["X"].setValue(int(self.xyz["X"].text().split(".")[0]))
         self.sliders["Y"].setValue(int(self.xyz["Y"].text().split(".")[0]))
         self.sliders["Z"].setValue(int(self.xyz["Z"].text().split(".")[0]))
+        self.sliders["hX"].setValue(int(self.xyz["hX"].text().split(".")[0]))
+        self.sliders["hY"].setValue(int(self.xyz["hY"].text().split(".")[0]))
+        self.sliders["hZ"].setValue(int(self.xyz["hZ"].text().split(".")[0]))
         self.update_position()
 
     def sync_sliders_with_actor(self):
@@ -245,17 +377,24 @@ class GCodeApp(QtWidgets.QMainWindow):
         active_name = self.selector.currentText()
         if active_name in self.actors:
             pos = self.actors[active_name].position
-
+            b = self.actors[active_name].mapper.dataset.bounds
+            size = (b[1] - b[0], b[3] - b[2], b[5] - b[4])
             # Блокируем сигналы, чтобы перемещение ползунка не вызывало update_position
             for i, axis in enumerate(["X", "Y", "Z"]):
                 self.sliders[axis].blockSignals(True)
                 self.sliders[axis].setValue(int(pos[i] * 10))
+                self.xyz[axis].setText(f"{pos[i]}")
+                self.sliders[axis].blockSignals(False)
+
+            for i, axis in enumerate(["hX", "hY", "hZ"]):
+                self.sliders[axis].blockSignals(True)
+                self.sliders[axis].setValue(int(size[i]))
+                self.xyz[axis].setText(f"{size[i]}")
                 self.sliders[axis].blockSignals(False)
 
     def render_model(self):
         if self.actor:
             self.plotter.remove_actor(self.actor)
-
         line = pv.lines_from_points(self.parser.all_points)
         # 2. Настраиваем VTK-фильтр
         self.tube_filter = vtk.vtkTubeFilter()
@@ -266,15 +405,20 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.tube_filter.Update()
         # 3. Оборачиваем результат в PyVista
         tube = pv.wrap(self.tube_filter.GetOutput())
+
         # 4. Добавляем в плоттер
         self.actor = self.plotter.add_mesh(
             tube,
             name="3d_panel",
             color="beige",
-            smooth_shading=True,
-            specular=0.5,
-            diffuse=0.8,
-            ambient=0.2,
+            # 1. Сглаживание
+            smooth_shading=True,  # Включает интерполяцию цветов между вершинами
+            split_sharp_edges=True,  # Помогает сглаживанию на резких изгибах
+            # 2. Матовость (настройка освещения)
+            specular=0.1,  # Почти убираем зеркальные блики
+            specular_power=1,  # Делаем остаточный блик очень рассеянным
+            diffuse=0.8,  # Основной цвет поверхности (матовый слой)
+            ambient=0.3,  # Общая освещенность в тенях (чтобы не было черных пятен)
             pickable=False,
         )
 
@@ -287,14 +431,25 @@ class GCodeApp(QtWidgets.QMainWindow):
                 r, g, b, _ = color.getRgb()
                 self.actor.GetProperty().SetColor(r / 255.0, g / 255.0, b / 255.0)
 
-    def update_appearance(self):
-        self.thick_label.setText(f"Толщина линии: {self.thick_slider.value()}")
+    def update_appearance(self, value):
+        self.thick_input.setText(str(value))
         if self.actor:
-            self.tube_filter.SetRadius(self.thick_slider.value() / 20)
+            self.tube_filter.SetRadius(value / 20)
             self.tube_filter.Update()
             # Обновляем только данные в уже добавленном меше (быстрее чем add_mesh)
             self.actor.GetMapper().SetInputData(self.tube_filter.GetOutput())
             self.plotter.render()  # Рендерим только при изменении параметра
+
+    def update_slider_from_input(self):
+        # Обновляем значение слайдера при изменении текстового поля
+        try:
+            value = int(self.thick_input.text())
+            if 1 <= value <= 50:
+                self.thick_slider.setValue(value)
+            else:
+                self.thick_input.setText(str(self.thick_slider.value()))
+        except ValueError:
+            self.thick_input.setText(str(self.thick_slider.value()))
 
 
 if __name__ == "__main__":
