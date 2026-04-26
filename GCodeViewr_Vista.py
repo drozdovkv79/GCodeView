@@ -6,7 +6,15 @@ import pyvista as pv
 import vtk
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+)
 from pyvistaqt import BackgroundPlotter
 
 
@@ -84,11 +92,15 @@ class GCodeApp(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("G-Code Viewer")
         self.resize(1280, 720)
+        # Словарь для хранения акторов (объектов на сцене)
+        self.actors = {}
+        self.counter = 0
 
         self.parser = UltraFastParser()
         self.plotter = BackgroundPlotter(show=False)
         self.plotter.enable_anti_aliasing()
         self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
+        self.plotter.camera_position = "xy"
         # self.plotter.disable_camera_reset()
         self.plotter.show_grid(
             color=(80, 80, 90), grid="back", location="outer", ticks="both"
@@ -100,7 +112,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         # Настройка UI
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        layout = QtWidgets.QHBoxLayout(central)
+        self.layout = QtWidgets.QHBoxLayout(central)
 
         panel = QtWidgets.QVBoxLayout()
         btn_load = QtWidgets.QPushButton("Загрузить файл")
@@ -119,10 +131,50 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.btn_color.clicked.connect(self.change_color)
         panel.addWidget(self.btn_color)
 
-        panel.addStretch()
-        layout.addLayout(panel, 1)
-        layout.addWidget(self.plotter.interactor, 4)
+        # --- Секция добавления объектов ---
+        panel.addWidget(QLabel("<b>Добавить объект:</b>"))
+        btn_layout = QHBoxLayout()
 
+        btn_cube = QPushButton("Куб")
+        btn_cube.clicked.connect(lambda: self.add_shape("cube"))
+
+        btn_sphere = QPushButton("Сфера")
+        btn_sphere.clicked.connect(lambda: self.add_shape("sphere"))
+
+        btn_layout.addWidget(btn_cube)
+        btn_layout.addWidget(btn_sphere)
+        panel.addLayout(btn_layout)
+
+        panel.addWidget(QFrame(frameShape=QFrame.HLine))
+
+        # --- Секция выбора активного объекта ---
+        panel.addWidget(QLabel("<b>Выберите объект для перемещения:</b>"))
+        self.selector = QComboBox()
+        self.selector.currentIndexChanged.connect(self.sync_sliders_with_actor)
+        panel.addWidget(self.selector)
+
+        # --- Секция ползунков (X, Y, Z) ---
+        self.sliders = {}
+        for axis in ["X", "Y", "Z"]:
+            panel.addWidget(QLabel(f"Смещение по {axis}:"))
+            slider = QSlider(Qt.Horizontal)
+            slider.setMinimum(-100)
+            slider.setMaximum(100)
+            slider.setValue(0)
+            slider.valueChanged.connect(self.update_position)
+            panel.addWidget(slider)
+            self.sliders[axis] = slider
+            btn_scr = QPushButton("ScreenShot")
+        btn_scr.clicked.connect(
+            lambda: self.get_screenshot("/Users/drozdovkv/screen1.png")
+        )
+        panel.addWidget(btn_scr)
+
+        panel.addStretch()
+        self.layout.addLayout(panel, 1)
+        self.layout.addWidget(self.plotter.interactor, 4)
+
+        # -- закончили создавать интерфейс
         self.mesh = None
         self.actor = None
 
@@ -134,6 +186,53 @@ class GCodeApp(QtWidgets.QMainWindow):
                 n = len(self.parser.all_points)
                 self.setWindowTitle(f"G-Code Viewer: [{n}] {path}")
                 self.plotter.reset_camera()
+
+    def get_screenshot(self, fname):
+        self.plotter.screenshot(fname)
+
+    def add_shape(self, shape_type):
+        """Добавляет куб или сферу"""
+        self.counter += 1
+        name = f"{shape_type.capitalize()}_{self.counter}"
+
+        if shape_type == "cube":
+            mesh = pv.Cube(x_length=50, y_length=50, z_length=10)
+            color = "orange"
+        else:
+            mesh = pv.Sphere(radius=10)
+            color = "magenta"
+
+        actor = self.plotter.add_mesh(mesh, color=color, show_edges=True)
+        self.actors[name] = actor
+        self.selector.addItem(name)
+        # Автоматически выбираем новый объект
+        self.selector.setCurrentText(name)
+
+    def update_position(self):
+        """Обновляет позицию выбранного объекта на основе ползунков"""
+        active_name = self.selector.currentText()
+        if active_name in self.actors:
+            # Получаем значения ползунков (делим на 10 для плавности)
+            x = self.sliders["X"].value() / 30.0
+            y = self.sliders["Y"].value() / 30.0
+            z = self.sliders["Z"].value() / 30.0
+
+            # Устанавливаем позицию актора
+            self.actors[active_name].position = (x, y, z)
+            # Принудительная перерисовка не требуется для BackgroundPlotter,
+            # но можно вызвать если заметны задержки: self.plotter.render()
+
+    def sync_sliders_with_actor(self):
+        """Синхронизирует положение ползунков при смене объекта в списке"""
+        active_name = self.selector.currentText()
+        if active_name in self.actors:
+            pos = self.actors[active_name].position
+
+            # Блокируем сигналы, чтобы перемещение ползунка не вызывало update_position
+            for i, axis in enumerate(["X", "Y", "Z"]):
+                self.sliders[axis].blockSignals(True)
+                self.sliders[axis].setValue(int(pos[i] * 10))
+                self.sliders[axis].blockSignals(False)
 
     def render_model(self):
         if self.actor:
