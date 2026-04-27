@@ -8,15 +8,18 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QPushButton,
     QSlider,
 )
 from pyvistaqt import BackgroundPlotter
+from scipy.interpolate import splev, splprep
 
 
 class UltraFastParser:
@@ -72,14 +75,12 @@ class UltraFastParser:
 
             self.all_points = np.vstack(self.points).astype(np.float32)
             self.all_lines = np.concatenate(self.lines).astype(np.int32)
-
             return True
         except Exception as e:
             print(f"Error: {e}")
             return False
 
     def _add_polyline(self, path_points):
-        """Создает структуру PolyLine для VTK: [N, id0, id1, ..., idN-1]"""
         start_idx = sum(len(p) for p in self.points)
         pts = np.array(path_points, dtype=np.float32)
         self.points.append(pts)
@@ -93,7 +94,6 @@ class GCodeApp(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("G-Code Viewer")
         self.resize(1280, 720)
-        # Словарь для хранения акторов (объектов на сцене)
         self.actors = {}
         self.counter = 0
         self.sliders = {}
@@ -103,20 +103,23 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.plotter = BackgroundPlotter(show=False)
         self.plotter.background_color = "silver"
         self.plotter.enable_anti_aliasing()
-        self.plotter.render_window.SetMultiSamples(2)  # Отключаем MSAA для скорости
+        self.plotter.render_window.SetMultiSamples(2)
         """Render time for False : 37.045 ms
         2 Render time for fxaa  : 40.458 ms
         4 Render time for msaa  : 42.566 ms
         8-32 Render time for ssaa  : 51.450 ms"""
         # self.plotter.render_window.LineSmoothingOn()  # включить сглаживание линий.
         # self.plotter.render_window.PointSmoothingOn()  # включить сглаживание точек.
-        self.plotter.show()
-        self.plotter.enable_terrain_style(mouse_wheel_zooms=0.95)
+        self.plotter.enable_terrain_style(mouse_wheel_zooms=1.035)
         self.plotter.camera_position = "iso"  # xy, xz, yz, yx, zx, zy, iso
-        # self.plotter.disable_camera_reset()
         self.plotter.show_grid(
-            color=(80, 80, 90), grid="back", location="outer", ticks="both"
+            color=(80, 80, 90),
+            grid="back",
+            show_yaxis=False,
+            location="outer",
+            ticks="both",
         )
+        self.plotter.show()
 
         # Настройка UI
         central = QtWidgets.QWidget()
@@ -269,7 +272,12 @@ class GCodeApp(QtWidgets.QMainWindow):
                 self.plotter.reset_camera()
 
     def get_screenshot(self, fname):
-        self.plotter.screenshot(fname)
+        options = QFileDialog.Options()
+        fileName, _ = QFileDialog.getSaveFileName(
+            self, "Save File", "", "All Files (*);;PNG Files (*.png)", options=options
+        )
+        if fileName:
+            self.plotter.screenshot(fileName)
 
     def add_shape(self, shape_type):
         """Добавляет куб или сферу"""
@@ -302,63 +310,47 @@ class GCodeApp(QtWidgets.QMainWindow):
         }
 
         if position_name in camera_positions:
-            # self.plotter.camera_position = position_name
             self.plotter.camera_position = camera_positions[position_name]
             self.plotter.render()
 
     def update_zoom(self, value):
-        # zoom = self.sliders["zoom"].value()
-        # Преобразуем значение ползунка в коэффициент масштабирования
         scale_factor = value
         self.xyz["zoom"].setText(f"zoom: [{scale_factor}]")
-        # Обновляем масштаб модели
         self.plotter.camera.view_angle = scale_factor
         self.plotter.render()
 
     def update_position(self):
-        """Обновляет позицию выбранного объекта на основе ползунков"""
         active_name = self.selector.currentText()
         if active_name in self.actors:
-            # Получаем значения ползунков (делим на 10 для плавности)
             x = self.sliders["X"].value()
             y = self.sliders["Y"].value()
             z = self.sliders["Z"].value()
-            # Устанавливаем позицию актора
             self.actors[active_name].position = (x, y, z)
             self.xyz["X"].setText(f"{x}")
             self.xyz["Y"].setText(f"{y}")
             self.xyz["Z"].setText(f"{z}")
 
     def resize_cube(self, mesh, x_len, y_len, z_len):
-        # Изменяет размер меша, масштабируя его координаты под конкретные длины сторон.
-        # Вычисляем текущие габариты (bounding box)
-        # bounds возвращает [xmin, xmax, ymin, ymax, zmin, zmax]
         b = mesh.bounds
         curr_x = b[1] - b[0]
         curr_y = b[3] - b[2]
         curr_z = b[5] - b[4]
-
-        # Чтобы избежать деления на ноль, если меш плоский
         factors = [
             x_len / curr_x if curr_x != 0 else 1,
             y_len / curr_y if curr_y != 0 else 1,
             z_len / curr_z if curr_z != 0 else 1,
         ]
-        # Прямое изменение координат точек меша
         mesh.points[:, 0] *= factors[0]  # X
         mesh.points[:, 1] *= factors[1]  # Y
         mesh.points[:, 2] *= factors[2]  # Z
         return mesh
 
     def update_size(self):
-        """Обновляет размер выбранного объекта на основе ползунков"""
         active_name = self.selector.currentText()
         if active_name in self.actors:
-            # Получаем значения ползунков (делим на 10 для плавности)
             x = self.sliders["hX"].value()
             y = self.sliders["hY"].value()
             z = self.sliders["hZ"].value()
-            # Устанавливаем позицию актора
             self.resize_cube(self.actors[active_name].mapper.dataset, x, y, z)
             self.xyz["hX"].setText(f"{x}")
             self.xyz["hY"].setText(f"{y}")
@@ -373,13 +365,11 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.update_size()
 
     def sync_sliders_with_actor(self):
-        """Синхронизирует положение ползунков при смене объекта в списке"""
         active_name = self.selector.currentText()
         if active_name in self.actors:
             pos = self.actors[active_name].position
             b = self.actors[active_name].mapper.dataset.bounds
             size = (b[1] - b[0], b[3] - b[2], b[5] - b[4])
-            # Блокируем сигналы, чтобы перемещение ползунка не вызывало update_position
             for i, axis in enumerate(["X", "Y", "Z"]):
                 self.sliders[axis].blockSignals(True)
                 self.sliders[axis].setValue(int(pos[i] * 10))
@@ -392,29 +382,39 @@ class GCodeApp(QtWidgets.QMainWindow):
                 self.xyz[axis].setText(f"{size[i]}")
                 self.sliders[axis].blockSignals(False)
 
+    def interpolate_spline(self, polydata, num_points=1000):
+        points = polydata.points.copy()
+        tck, u = splprep(points.T, s=0, k=3)  # Сплайн 3-й степени
+        u_fine = np.linspace(u.min(), u.max(), num_points)
+        xnew, ynew, znew = splev(u_fine, tck)
+        interpolated_points = np.column_stack((xnew, ynew, znew))
+        return pv.PolyData(interpolated_points)
+
     def render_model(self):
         if self.actor:
             self.plotter.remove_actor(self.actor)
         line = pv.lines_from_points(self.parser.all_points)
+        spl = pv.PolyData(self.parser.all_points)
+        spl.lines = np.hstack(
+            [[len(self.parser.all_points)], np.arange(len(self.parser.all_points))]
+        )
         # 2. Настраиваем VTK-фильтр
         self.tube_filter = vtk.vtkTubeFilter()
-        self.tube_filter.SetInputData(line)
-        self.tube_filter.SetRadius(1.5)
+        self.tube_filter.SetInputData(spl)
+        self.tube_filter.SetRadius(2.5)
         self.tube_filter.SetNumberOfSides(8)
-        self.tube_filter.SetCapping(True)
+        # self.tube_filter.SetCapping(True)
         self.tube_filter.Update()
         # 3. Оборачиваем результат в PyVista
         tube = pv.wrap(self.tube_filter.GetOutput())
-
         # 4. Добавляем в плоттер
         self.actor = self.plotter.add_mesh(
             tube,
             name="3d_panel",
             color="beige",
-            # 1. Сглаживание
             smooth_shading=True,  # Включает интерполяцию цветов между вершинами
-            split_sharp_edges=True,  # Помогает сглаживанию на резких изгибах
-            # 2. Матовость (настройка освещения)
+            # split_sharp_edges=True,  # Помогает сглаживанию на резких изгибах
+            show_edges=False,
             specular=0.1,  # Почти убираем зеркальные блики
             specular_power=1,  # Делаем остаточный блик очень рассеянным
             diffuse=0.8,  # Основной цвет поверхности (матовый слой)
@@ -436,7 +436,6 @@ class GCodeApp(QtWidgets.QMainWindow):
         if self.actor:
             self.tube_filter.SetRadius(value / 20)
             self.tube_filter.Update()
-            # Обновляем только данные в уже добавленном меше (быстрее чем add_mesh)
             self.actor.GetMapper().SetInputData(self.tube_filter.GetOutput())
             self.plotter.render()  # Рендерим только при изменении параметра
 
