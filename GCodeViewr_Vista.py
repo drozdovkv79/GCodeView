@@ -1,8 +1,10 @@
 import sys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 import vtk
+from PIL import Image
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -20,6 +22,105 @@ from PyQt5.QtWidgets import (
 )
 from pyvistaqt import BackgroundPlotter
 from scipy.interpolate import splev, splprep
+
+
+def generate_realistic_sand_texture(size=(1024, 1024)):
+    from noise import pnoise2
+
+    # Несколько слоёв шума разного масштаба
+    layers = []
+    scales = [50, 100, 200]
+    weights = [0.5, 0.3, 0.2]
+
+    for scale, weight in zip(scales, weights):
+        layer = np.zeros(size)
+        for i in range(size[0]):
+            for j in range(size[1]):
+                layer[i][j] = pnoise2(i / scale, j / scale, octaves=6, persistence=0.5)
+        layers.append(layer * weight)
+
+    combined = np.sum(layers, axis=0)
+    combined = (combined - combined.min()) / (combined.max() - combined.min())
+
+    # Цветовая карта песка
+    sand_colors = np.stack(
+        [
+            combined * 0.9 + 0.1,  # R: тёплый бежевый
+            combined * 0.8 + 0.15,  # G: чуть зеленее
+            combined * 0.6 + 0.2,  # B: немного синего для реализма
+        ],
+        axis=-1,
+    )
+
+    # Добавляем вкрапления
+    dark_mask = combined < 0.2
+    light_mask = combined > 0.8
+
+    sand_colors[dark_mask] *= [0.7, 0.6, 0.5]  # Тёмные вкрапления (тёмно-коричневый)
+    sand_colors[light_mask] *= [1.3, 1.2, 1.1]  # Светлые вкрапления (почти белый)
+
+    return (np.clip(sand_colors, 0, 1) * 255).astype(np.uint8)
+
+
+def generate_sand_with_pebbles_texture(size=(1024, 1024), pebble_density=0.02):
+    np.random.seed(42)  # Для воспроизводимости
+
+    # Основной песок — гладкий шум
+    from scipy.ndimage import gaussian_filter
+
+    base = np.random.rand(size[0], size[1])
+    sand_base = gaussian_filter(base, sigma=2)
+
+    sand_base = (sand_base - sand_base.min()) / (sand_base.max() - sand_base.min())
+
+    # Создаём карту гальки
+    pebbles = np.random.rand(size[0], size[1]) < pebble_density
+    pebble_centers = np.where(pebbles)
+
+    # Размываем гальку для реалистичности
+    pebble_map = np.zeros_like(sand_base)
+    for i, j in zip(pebble_centers[0], pebble_centers[1]):
+        # Случайный размер гальки
+        radius = np.random.randint(3, 8)
+        y, x = np.ogrid[-radius : radius + 1, -radius : radius + 1]
+        mask = x**2 + y**2 <= radius**2
+        if (
+            0 <= i - radius
+            and i + radius + 1 < size[0]
+            and 0 <= j - radius
+            and j + radius + 1 < size[1]
+        ):
+            pebble_map[i - radius : i + radius + 1, j - radius : j + radius + 1][
+                mask
+            ] = 1
+
+    # Применяем гальку с разной интенсивностью
+    pebble_intensity = np.random.uniform(0.3, 0.8, pebble_map.shape)
+    pebble_map *= pebble_intensity
+
+    # Комбинируем
+    final = sand_base + pebble_map * 0.3
+    final = (final - final.min()) / (final.max() - final.min())
+
+    # Цвета
+    color_map = np.stack(
+        [final * 0.9 + 0.05, final * 0.8 + 0.08, final * 0.6 + 0.1], axis=-1
+    )
+
+    return (color_map * 255).astype(np.uint8)
+
+
+# Функция для создания синтетической текстуры песка
+def create_synthetic_sand_texture(size=(256, 256)):
+    height, width = size
+    # Создаём базовый шум
+    noise = np.random.rand(height, width, 3) * 0.1
+    # Базовый цвет песка (бежевый)
+    base_color = np.array([0.9, 0.8, 0.6])
+    texture = base_color + noise
+    # Нормализуем значения в диапазон [0, 1]
+    texture = np.clip(texture, 0, 1)
+    return (texture * 255).astype(np.uint8)
 
 
 class UltraFastParser:
@@ -393,7 +494,7 @@ class GCodeApp(QtWidgets.QMainWindow):
     def render_model(self):
         if self.actor:
             self.plotter.remove_actor(self.actor)
-        line = pv.lines_from_points(self.parser.all_points)
+        # line = pv.lines_from_points(self.parser.all_points)
         spl = pv.PolyData(self.parser.all_points)
         spl.lines = np.hstack(
             [[len(self.parser.all_points)], np.arange(len(self.parser.all_points))]
@@ -407,9 +508,17 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.tube_filter.Update()
         # 3. Оборачиваем результат в PyVista
         tube = pv.wrap(self.tube_filter.GetOutput())
+
+        # Добавляем данные нормалей к сетке
+        tube.texture_map_to_plane(inplace=True, use_bounds=False)
+        # Загружаем текстуру песка
+        texture_array = generate_realistic_sand_texture()
+        texture = pv.Texture(texture_array)
+
         # 4. Добавляем в плоттер
         self.actor = self.plotter.add_mesh(
             tube,
+            texture=texture,
             name="3d_panel",
             color="beige",
             smooth_shading=True,  # Включает интерполяцию цветов между вершинами
@@ -421,6 +530,7 @@ class GCodeApp(QtWidgets.QMainWindow):
             ambient=0.3,  # Общая освещенность в тенях (чтобы не было черных пятен)
             pickable=False,
         )
+        self.plotter.enable_depth_peeling(number_of_peels=40, occlusion_ratio=0.0)
 
     def change_color(self):
         color = QtWidgets.QColorDialog.getColor()
