@@ -5,3 +5,7 @@ __pycache__/GCodeViewr_Vista.cpython-314.pyc
 .DS_Store
 .zed/gvtest1.py
 .zed/tasks.json
+219.gcode
+__pycache__/GCodeViewr_Vista.cpython-314-pytest-9.0.3.pyc
+slice_test.py
+test_ribbon.py
