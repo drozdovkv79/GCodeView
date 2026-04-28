@@ -240,14 +240,14 @@ class GCodeApp(QtWidgets.QMainWindow):
         # Текстовое поле для ввода значения толщины линии
         self.thick_input = QtWidgets.QLineEdit()
         self.thick_input.setFixedWidth(30)
-        self.thick_input.setText("30")
+        self.thick_input.setText("50")
         self.thick_input.editingFinished.connect(self.update_slider_from_input)
         panel1.addWidget(self.thick_input)
 
         # Слайдер для изменения толщины линии
         self.thick_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.thick_slider.setRange(1, 80)
-        self.thick_slider.setValue(30)
+        self.thick_slider.setRange(1, 100)
+        self.thick_slider.setValue(50)
         self.thick_slider.valueChanged.connect(self.update_appearance)
         panel1.addWidget(self.thick_slider)
         panel.addLayout(panel1)
@@ -280,6 +280,14 @@ class GCodeApp(QtWidgets.QMainWindow):
             button_layout.addWidget(button)
         panel.addLayout(button_layout)
 
+        # Сохранение экрана в файл
+        btn_scr = QPushButton("ScreenShot")
+        btn_scr.clicked.connect(
+            lambda: self.get_screenshot("/Users/drozdovkv/screen1.png")
+        )
+        panel.addWidget(btn_scr)
+        panel.addWidget(QFrame(frameShape=QFrame.HLine))
+
         # --- Секция добавления объектов ---
         panel.addWidget(QLabel("<b>Добавить объект:</b>"))
         btn_layout = QHBoxLayout()
@@ -293,8 +301,6 @@ class GCodeApp(QtWidgets.QMainWindow):
         btn_layout.addWidget(btn_cube)
         btn_layout.addWidget(btn_sphere)
         panel.addLayout(btn_layout)
-
-        panel.addWidget(QFrame(frameShape=QFrame.HLine))
 
         # --- Секция выбора активного объекта ---
         panel.addWidget(QLabel("<b>Выберите объект для перемещения:</b>"))
@@ -346,13 +352,6 @@ class GCodeApp(QtWidgets.QMainWindow):
         # Кнопка применения
         btn_scr = QPushButton("Применить")
         btn_scr.clicked.connect(self.xyz_apply)
-        panel.addWidget(btn_scr)
-
-        # Сохранение экрана в файл
-        btn_scr = QPushButton("ScreenShot")
-        btn_scr.clicked.connect(
-            lambda: self.get_screenshot("/Users/drozdovkv/screen1.png")
-        )
         panel.addWidget(btn_scr)
 
         panel.addStretch()
@@ -509,16 +508,15 @@ class GCodeApp(QtWidgets.QMainWindow):
         # 3. Оборачиваем результат в PyVista
         tube = pv.wrap(self.tube_filter.GetOutput())
 
-        # Добавляем данные нормалей к сетке
-        tube.texture_map_to_plane(inplace=True, use_bounds=False)
-        # Загружаем текстуру песка
+        # Текстурирование
+        """tube.texture_map_to_plane(inplace=True, use_bounds=False)
         texture_array = generate_realistic_sand_texture()
-        texture = pv.Texture(texture_array)
+        texture = pv.Texture(texture_array)"""
 
         # 4. Добавляем в плоттер
         self.actor = self.plotter.add_mesh(
             tube,
-            texture=texture,
+            # texture=texture,
             name="3d_panel",
             color="beige",
             smooth_shading=True,  # Включает интерполяцию цветов между вершинами
