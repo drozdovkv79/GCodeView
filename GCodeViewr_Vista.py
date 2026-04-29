@@ -195,7 +195,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("G-Code Viewer")
         self.resize(1280, 720)
-        self.actors = {}
+        self.actors = {"3d_panel": None}
         self.counter = 0
         self.sliders = {}
         self.xyz = {}
@@ -270,7 +270,17 @@ class GCodeApp(QtWidgets.QMainWindow):
         panel.addLayout(zoom_layout)
 
         # Создаем кнопки
-        buttons = ["zy", "xy", "yz", "yx", "xz", "zx", "iso"]
+        buttons = ["front", "back", "left"]
+        button_layout = QHBoxLayout()
+        for button_name in buttons:
+            button = QPushButton(button_name)
+            button.clicked.connect(
+                lambda _, name=button_name: self.set_camera_position(name)
+            )
+            button_layout.addWidget(button)
+        panel.addLayout(button_layout)
+        # Создаем кнопки
+        buttons = ["right", "up", "down", "iso"]
         button_layout = QHBoxLayout()
         for button_name in buttons:
             button = QPushButton(button_name)
@@ -289,7 +299,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         panel.addWidget(QFrame(frameShape=QFrame.HLine))
 
         # --- Секция добавления объектов ---
-        panel.addWidget(QLabel("<b>Добавить объект:</b>"))
+        # panel.addWidget(QLabel("<b>Добавить объект:</b>"))
         btn_layout = QHBoxLayout()
 
         btn_cube = QPushButton("Куб")
@@ -300,13 +310,13 @@ class GCodeApp(QtWidgets.QMainWindow):
 
         btn_layout.addWidget(btn_cube)
         btn_layout.addWidget(btn_sphere)
-        panel.addLayout(btn_layout)
+        # panel.addLayout(btn_layout)
 
         # --- Секция выбора активного объекта ---
-        panel.addWidget(QLabel("<b>Выберите объект для перемещения:</b>"))
+        # panel.addWidget(QLabel("<b>Выберите объект для перемещения:</b>"))
         self.selector = QComboBox()
         self.selector.currentIndexChanged.connect(self.sync_sliders_with_actor)
-        panel.addWidget(self.selector)
+        # panel.addWidget(self.selector)
 
         # --- Секция ползунков (X, Y, Z) ---
         # Создаем макет для полей ввода
@@ -347,20 +357,53 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.sliders["h" + axis] = slider
 
         # Добавляем макеты в основной макет
-        panel.addLayout(input_layout)
+        # panel.addLayout(input_layout)
 
         # Кнопка применения
         btn_scr = QPushButton("Применить")
         btn_scr.clicked.connect(self.xyz_apply)
-        panel.addWidget(btn_scr)
+        # panel.addWidget(btn_scr)
 
         panel.addStretch()
         self.layout.addLayout(panel, 1)
         self.layout.addWidget(self.plotter.interactor, 4)
 
+        # добавляем бокс для обрезки
+        self.plotter.add_box_widget(
+            callback=self.update_visibility,
+            bounds=(-10, 10, -10, 10, -10, 10),
+            factor=1,
+            rotation_enabled=False,
+            color="black",
+            interaction_event="always",
+        )
         # -- закончили создавать интерфейс
         self.mesh = None
         self.actor = None
+
+    # ====================== Callback для Box Widget ======================
+    def update_visibility(self, box_mesh):
+        if box_mesh is None:
+            return
+        if self.actors is None:
+            return
+        if self.actors["3d_panel"] is None:
+            return
+        bounds = box_mesh.bounds
+        cloud = self.actors["3d_panel"].mapper.dataset
+        x, y, z = cloud.points[:, 0], cloud.points[:, 1], cloud.points[:, 2]
+        inside = (
+            (x >= bounds[0])
+            & (x <= bounds[1])
+            & (y >= bounds[2])
+            & (y <= bounds[3])
+            & (z >= bounds[4])
+            & (z <= bounds[5])
+        )
+        cloud.point_data["visible"] = inside
+        cloud.set_active_scalars("visible")
+        self.plotter.update()
+        # self.plotter.update_scalars(cloud["visible"], mesh=cloud, render=True)
 
     def load_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open G-code")
@@ -400,12 +443,12 @@ class GCodeApp(QtWidgets.QMainWindow):
 
     def set_camera_position(self, position_name):
         camera_positions = {
-            "xy": [0, 1, 0],
-            "xz": [0, 0, 1],
-            "yz": [1, 0, 0],
-            "yx": [-1, 0, 0],
-            "zx": [0, 0, -1],
-            "zy": [0, -1, 0],
+            "back": [0, 1, 0],
+            "up": [0, 0, 1],
+            "right": [1, 0, 0],
+            "left": [-1, 0, 0],
+            "down": [0, 0, -1],
+            "front": [0, -1, 0],
             "iso": [1, 1, 1],
         }
 
@@ -498,6 +541,13 @@ class GCodeApp(QtWidgets.QMainWindow):
         spl.lines = np.hstack(
             [[len(self.parser.all_points)], np.arange(len(self.parser.all_points))]
         )
+        # spl["visible"] = np.full(len(self.parser.all_points), True, dtype=bool)
+        possible_values = [True, False]
+        spl["visible"] = np.random.choice(
+            possible_values,
+            size=len(self.parser.all_points),
+            p=[0.000000001, 0.999999999],  # 80% точек видимы, 20% скрыты
+        )
         # 2. Настраиваем VTK-фильтр
         self.tube_filter = vtk.vtkTubeFilter()
         self.tube_filter.SetInputData(spl)
@@ -518,7 +568,7 @@ class GCodeApp(QtWidgets.QMainWindow):
             tube,
             # texture=texture,
             name="3d_panel",
-            color="beige",
+            # color="beige",
             smooth_shading=True,  # Включает интерполяцию цветов между вершинами
             # split_sharp_edges=True,  # Помогает сглаживанию на резких изгибах
             show_edges=False,
@@ -527,7 +577,11 @@ class GCodeApp(QtWidgets.QMainWindow):
             diffuse=0.8,  # Основной цвет поверхности (матовый слой)
             ambient=0.3,  # Общая освещенность в тенях (чтобы не было черных пятен)
             pickable=False,
+            scalars="visible",
+            show_scalar_bar=False,
+            cmap=["beige", "gray"],
         )
+        self.actors["3d_panel"] = self.actor
         self.plotter.enable_depth_peeling(number_of_peels=40, occlusion_ratio=0.0)
 
     def change_color(self):
@@ -537,7 +591,7 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.btn_color.setText("Цвет: " + color.name())
             if self.actor:
                 r, g, b, _ = color.getRgb()
-                self.actor.GetProperty().SetColor(r / 255.0, g / 255.0, b / 255.0)
+                # self.actor.GetProperty().SetColor(r / 255.0, g / 255.0, b / 255.0)
 
     def update_appearance(self, value):
         self.thick_input.setText(str(value))
