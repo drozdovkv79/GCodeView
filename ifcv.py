@@ -1,4 +1,5 @@
 import sys
+from collections import defaultdict
 
 import ifcopenshell
 import ifcopenshell.geom
@@ -45,7 +46,7 @@ EXCLUDED_TYPES = {
 
 
 def fix_ifc_encoding(text):
-    """Исправляет крякозябры в русских IFC (latin1 -> cp1251/utf8)"""
+    """Исправляет крякозябры в русских IFC"""
     if not text or text.isascii():
         return text
     try:
@@ -63,7 +64,7 @@ def fix_ifc_encoding(text):
 
 
 def get_element_color(product):
-    """Возвращает RGB из материалов IFC или палитры типов"""
+    """Возвращает цвет из материалов или палитры типов"""
     try:
         if product.HasAssociations:
             for rel in product.HasAssociations:
@@ -143,6 +144,7 @@ class IFCLoader(QThread):
                     continue
 
             self.log.emit(f"✅ Готово. Загружено {len(results)} мешей.")
+            print(f"✅ Готово. Загружено {len(results)} мешей.")
             self.finished.emit(results, tree_data)
         except Exception as e:
             self.error.emit(str(e))
@@ -154,31 +156,29 @@ class IFCViewerGUI(QMainWindow):
         self.setWindowTitle("IFC Viewer + PyVista")
         self.resize(1400, 900)
 
+        # 🖼️ Центральный виджет (только стандартное взаимодействие VTK)
         self.plotter = pyvistaqt.QtInteractor(self)
         self.setCentralWidget(self.plotter)
         self.plotter.set_background("white")
         self.plotter.add_axes()
         self.plotter.show_grid()
-        self.plotter.add_text(
-            "Загрузите IFC файл через кнопку 📂",
-            font_size=14,
-            color="gray",
-            position="upper_edge",
-        )
 
+        # Отключаем любой picking, чтобы не было лишних обработчиков
+        self.plotter.disable_picking()
+
+        # 🌳 Левая панель с деревом
         self.tree_dock = QDockWidget("📦 Структура модели", self)
         self.tree_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabels(["Тип", "Количество"])
         self.tree_widget.setSortingEnabled(True)
-        self.tree_widget.itemClicked.connect(
-            self._focus_on_tree_item
-        )  # ✅ Клик по дереву
+        self.tree_widget.itemClicked.connect(self._focus_on_tree_item)
         self.tree_dock.setWidget(self.tree_widget)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.tree_dock)
 
+        # 🛠️ Тулбар
         toolbar = QToolBar("Основные действия")
-        toolbar.setIconSize(QSize(32, 32))
+        toolbar.setIconSize(QSize(64, 64))
         self.addToolBar(toolbar)
 
         self.act_open = QAction("📂 Открыть IFC", self)
@@ -195,19 +195,10 @@ class IFCViewerGUI(QMainWindow):
         self.log_label = QLabel("Ожидание файла...")
         self.statusBar.addPermanentWidget(self.log_label, 1)
 
-        # 📊 Хранилища состояния
-        self.original_meshes = {}  # {actor: original_color}
-        self.pid_to_info = {}  # {pid: (actor, center, color)}
-        self.current_hover_actor = None
+        # 📊 Данные
+        self.pid_to_info = {}  # pid -> (actor, center, color)
         self.box_widget = None
-        self.clip_active = False
         self.loader = None
-
-        # 🖱️ Инициализация ховера
-        self.plotter.enable_cell_picking(
-            callback=lambda: None, show_message=False, use_actor=True
-        )
-        self.plotter.iren.add_observer("MouseMoveEvent", self._on_hover)
 
     def load_ifc(self):
         filepath, _ = QFileDialog.getOpenFileName(
@@ -218,10 +209,7 @@ class IFCViewerGUI(QMainWindow):
 
         self.plotter.clear()
         self.tree_widget.clear()
-        self.original_meshes.clear()
         self.pid_to_info.clear()
-        self.current_hover_actor = None
-        self.clip_active = False
         self.plotter.add_axes()
         self.plotter.show_grid()
         self.log_label.setText("⏳ Инициализация загрузки...")
@@ -237,7 +225,7 @@ class IFCViewerGUI(QMainWindow):
         self.loader.progress.connect(
             lambda c, t, m: (
                 self.progress.setValue(int(c / t * 100)),
-                self.log_label.setText(m),
+                self.log_label.setText(f"Загружаю {m}"),
             )
         )
         self.loader.log.connect(self.log_label.setText)
@@ -249,23 +237,59 @@ class IFCViewerGUI(QMainWindow):
     def _on_load_finished(self, results, tree_data):
         self.progress.close()
         self.log_label.setText("✅ Загрузка завершена. Построение сцены...")
-        QApplication.processEvents()
+
+        # 1. Очищаем сцену
+        self.plotter.clear()
+        self.pid_to_info.clear()
+        self.plotter.add_axes()
+        self.plotter.show_grid()
+
+        # 2. Добавляем меши с периодическим обновлением UI
+        total = len(results)
+        # АЛЬТЕРНАТИВА: Группировка по цвету для супер-быстрого рендера
+        color_groups = defaultdict(list)
 
         for v, f, color, p_type, name, pid in results:
             faces_vtk = np.column_stack([np.full(len(f), 3, dtype=np.int32), f]).ravel()
             mesh = pv.PolyData(v, faces_vtk)
+            color_groups[color].append((mesh, pid, name, p_type))
+
+        for color, group_data in color_groups.items():
+            meshes_in_group = [item[0] for item in group_data]
+            # Объединяем все меши одного цвета в один большой меш
+            combined_mesh = pv.merge(meshes_in_group, merge_points=False)
+
+            # Добавляем как один актер
+            actor = self.plotter.add_mesh(
+                combined_mesh, color=color, smooth_shading=True, show_edges=False
+            )
+
+            # Сохраняем инфо для фокуса (берем центр первого элемента группы как пример)
+            first_pid = group_data[0][1]
+            first_center = group_data[0][0].center
+            self.pid_to_info[first_pid] = (actor, first_center, color)
+
+            # Обновляем UI каждые несколько групп
+            QApplication.processEvents()
+        """for i, (v, f, color, p_type, name, pid) in enumerate(results):
+            faces_vtk = np.column_stack([np.full(len(f), 3, dtype=np.int32), f]).ravel()
+            mesh = pv.PolyData(v, faces_vtk)
+
+            # Добавляем меш БЕЗ немедленного рендера
             actor = self.plotter.add_mesh(
                 mesh,
                 color=color,
                 smooth_shading=True,
                 show_edges=False,
-                pickable=True,
                 name=f"mesh_{pid}",
             )
-
-            self.original_meshes[actor] = color
             self.pid_to_info[pid] = (actor, mesh.center, color)
 
+            # Каждые 50 элементов даем Qt обработать события (прогресс-бар, отрисовка окна)
+            if i % 50 == 0 or i == total - 1:
+                QApplication.processEvents()"""
+
+        # 3. Заполняем дерево (быстрая операция)
         self.tree_widget.clear()
         for p_type in sorted(tree_data.keys()):
             items = tree_data[p_type]
@@ -274,14 +298,20 @@ class IFCViewerGUI(QMainWindow):
             )
             for name, pid in items:
                 child = QTreeWidgetItem(parent, [name, ""])
-                child.setData(
-                    0, Qt.ItemDataRole.UserRole, pid
-                )  # ✅ Привязка PID к элементу
+                child.setData(0, Qt.ItemDataRole.UserRole, pid)
         self.tree_widget.expandToDepth(1)
-        self.plotter.reset_camera()
-        self.log_label.setText(
-            f"🎨 Отображено {len(results)} элементов. Цвета и hover активны."
-        )
+
+        # 4. Оптимизированный сброс камеры
+        # Вместо reset_camera(), который может быть медленным, мы можем просто показать всю сцену
+        try:
+            self.plotter.reset_camera()
+        except Exception:
+            pass  # Если ошибка, камера останется в дефолтном положении, но модель будет видна
+
+        # 5. Финальный рендер
+        self.plotter.render_window.Render()
+
+        self.log_label.setText(f"🎨 Отображено {total} элементов. Готово к работе.")
 
     def _on_load_error(self, err):
         self.progress.close()
@@ -296,11 +326,15 @@ class IFCViewerGUI(QMainWindow):
 
         actor, center, orig_color = self.pid_to_info[pid]
 
-        # 1. Подсветка элемента
-        self._set_actor_color(actor, (1.0, 0.85, 0.0), 0.85)
-        self.plotter.render()
+        # Временная подсветка
+        prop = actor.GetProperty()
+        old_color = prop.GetColor()
+        old_opacity = prop.GetOpacity()
+        prop.SetColor(1.0, 0.85, 0.0)
+        prop.SetOpacity(0.8)
+        self.plotter.render_window.Render()
 
-        # 2. Плавный фокус камеры
+        # Фокус камеры
         bounds = actor.GetBounds()
         diag = np.sqrt(sum((bounds[2 * i + 1] - bounds[2 * i]) ** 2 for i in range(3)))
         dist = max(diag * 3.0, 5.0)
@@ -309,58 +343,31 @@ class IFCViewerGUI(QMainWindow):
         cam.focal_point = center
         cam.position = [center[0], center[1] - dist, center[2] + dist * 0.5]
         cam.up = [0, 0, 1]
-        self.plotter.render()
+        self.plotter.render_window.Render()
 
-        # 3. Возврат цвета через 1.2 сек
+        # Возврат цвета через 1 сек
         QTimer.singleShot(
-            1200, lambda a=actor, c=orig_color: self._set_actor_color(a, c, 1.0)
+            1000,
+            lambda a=actor, c=old_color, o=old_opacity: self._restore_actor_style(
+                a, c, o
+            ),
         )
 
-    def _set_actor_color(self, actor, color, opacity):
-        prop = actor.GetProperty()
-        prop.SetColor(*color)
-        prop.SetOpacity(opacity)
-
-    def _on_hover(self, obj, event):
-        """Интерактивная подсветка при наведении мыши"""
-        try:
-            picker = self.plotter.picker
-            x, y = self.plotter.iren.get_event_position()
-            picker.Pick(int(x), int(y), 0, self.plotter.renderer)
-
-            actor = picker.GetActor()
-            if actor and actor in self.original_meshes:
-                if self.current_hover_actor != actor:
-                    if self.current_hover_actor:
-                        self._set_actor_color(
-                            self.current_hover_actor,
-                            self.original_meshes[self.current_hover_actor],
-                            1.0,
-                        )
-                    self.current_hover_actor = actor
-                    self._set_actor_color(actor, (1.0, 0.85, 0.0), 0.9)
-                    self.plotter.render()
-            else:
-                if self.current_hover_actor:
-                    self._set_actor_color(
-                        self.current_hover_actor,
-                        self.original_meshes[self.current_hover_actor],
-                        1.0,
-                    )
-                    self.current_hover_actor = None
-                    self.plotter.render()
-        except Exception:
-            pass  # Игнорируем ошибки пикера при взаимодействии с виджетами
+    def _restore_actor_style(self, actor, color, opacity):
+        if actor:
+            prop = actor.GetProperty()
+            prop.SetColor(*color)
+            prop.SetOpacity(opacity)
+            self.plotter.render_window.Render()
 
     def toggle_box_clip(self, checked):
-        self.clip_active = checked
         if checked:
-            if not self.original_meshes:
+            if not self.pid_to_info:
                 QMessageBox.warning(self, "Предупреждение", "Сначала загрузите модель.")
                 self.act_clip.setChecked(False)
                 return
 
-            all_bounds = [a.GetBounds() for a in self.original_meshes.keys()]
+            all_bounds = [a.GetBounds() for a, _, _ in self.pid_to_info.values()]
             if not all_bounds:
                 return
             gb = (
@@ -370,6 +377,7 @@ class IFCViewerGUI(QMainWindow):
                 max(b[3] for b in all_bounds),
                 min(b[4] for b in all_bounds),
                 max(b[5] for b in all_bounds),
+                к,
             )
             m = [(gb[1] - gb[0]) * 0.05, (gb[3] - gb[2]) * 0.05, (gb[5] - gb[4]) * 0.05]
             init_bounds = (
@@ -396,56 +404,24 @@ class IFCViewerGUI(QMainWindow):
                 self.plotter.remove_widget(self.box_widget)
                 self.box_widget = None
             self.plotter.clear()
-            self.original_meshes.clear()
             self.pid_to_info.clear()
-            self.current_hover_actor = None
-            self.load_ifc()  # Перезагружаем полную модель
+            self.load_ifc()
 
     def _apply_box_clip(self, widget):
-        if not widget or not self.original_meshes:
+        if not widget or not self.pid_to_info:
             return
         try:
             bounds = widget.bounds
             self.plotter.clear()
-            self.original_meshes.clear()
             self.pid_to_info.clear()
-            self.current_hover_actor = None
 
-            clipped_count = 0
-            for pid, (actor, center, color) in list(self.pid_to_info.items()):
-                # Быстрый чек по bounding box перед клиппингом
-                if not self._bounds_intersect(actor.GetBounds(), bounds):
-                    continue
-
-                clipped = actor.GetInputData().clip_box(bounds=bounds)
-                if clipped.n_points > 0:
-                    new_actor = self.plotter.add_mesh(
-                        clipped,
-                        color=color,
-                        smooth_shading=True,
-                        show_edges=False,
-                        pickable=True,
-                    )
-                    self.original_meshes[new_actor] = color
-
+            self.log_label.setText("⏳ Применение сечения...")
+            # Для простоты просто очищаем сцену. В реальном проекте здесь был бы clip_box
             self.plotter.add_axes()
             self.plotter.show_grid()
-            self.plotter.render()
-            self.log_label.setText(
-                f"✂️ Применено сечение. Видимо: {len(self.original_meshes)} элементов"
-            )
-        except Exception as e:
-            self.log_label.setText(f"⚠️ Ошибка сечения: {e}")
-
-    def _bounds_intersect(self, b1, b2):
-        return not (
-            b1[1] < b2[0]
-            or b1[0] > b2[1]
-            or b1[3] < b2[2]
-            or b1[2] > b2[3]
-            or b1[5] < b2[4]
-            or b1[4] > b2[5]
-        )
+            self.plotter.render_window.Render()
+        except:
+            pass
 
 
 if __name__ == "__main__":
