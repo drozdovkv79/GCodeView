@@ -5,9 +5,9 @@ import numpy as np
 import pyvista as pv
 import vtk
 from PIL import Image
-from PyQt5 import QtCore, QtWidgets
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from PyQt6 import QtCore, QtWidgets
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
@@ -371,7 +371,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         # добавляем бокс для обрезки
         self.plotter.add_box_widget(
             callback=self.update_visibility,
-            bounds=(-10, 10, -10, 10, -10, 10),
+            bounds=(-700, 700, -100, 100, 0, 1000),
             factor=1,
             rotation_enabled=False,
             color="black",
@@ -401,9 +401,10 @@ class GCodeApp(QtWidgets.QMainWindow):
             & (z <= bounds[5])
         )
         cloud.point_data["visible"] = inside
-        cloud.set_active_scalars("visible")
+        # self.actors["3d_panel"].mapper.dataset.points = cloud.points[inside]
         self.plotter.update()
-        # self.plotter.update_scalars(cloud["visible"], mesh=cloud, render=True)
+        # self.plotter.render()
+        # cloud.set_active_scalars("visible")
 
     def load_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open G-code")
@@ -591,7 +592,7 @@ class GCodeApp(QtWidgets.QMainWindow):
             self.btn_color.setText("Цвет: " + color.name())
             if self.actor:
                 r, g, b, _ = color.getRgb()
-                # self.actor.GetProperty().SetColor(r / 255.0, g / 255.0, b / 255.0)
+                self.actor.GetProperty().SetColor(r / 255.0, g / 255.0, b / 255.0)
 
     def update_appearance(self, value):
         self.thick_input.setText(str(value))
