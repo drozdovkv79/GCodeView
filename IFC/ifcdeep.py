@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSlider,
@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from pyvistaqt import QtInteractor
+from vtk.util.numpy_support import vtk_to_numpy
 
 
 @dataclass
@@ -148,7 +149,7 @@ class LoadWorker(QThread):
         hierarchy = {"name": "Model", "children": {}, "elements": []}
 
         # Группировка по классам
-        for elem in elements[:1000]:  # Ограничиваем для производительности
+        for elem in elements:  # Ограничиваем для производительности [:1000]
             elem_type = elem.is_a()
             if elem_type not in hierarchy["children"]:
                 hierarchy["children"][elem_type] = {
@@ -172,6 +173,663 @@ class LoadWorker(QThread):
         return hierarchy
 
 
+class ConvertWorker(QThread):
+    """Поток для конвертации IFC в GLB через trimesh"""
+
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, ifc_file, element_actors, output_file):
+        super().__init__()
+        self.ifc_file = ifc_file
+        self.element_actors = element_actors
+        self.output_file = output_file
+
+    def run(self):
+        try:
+            import numpy as np
+            import trimesh
+
+            self.progress.emit(10, "Сбор геометрических данных...")
+
+            # Собираем все меши в список trimesh объектов
+            all_meshes = []
+            total = len(self.element_actors)
+
+            for i, (elem_id, elem_info) in enumerate(self.element_actors.items()):
+                progress = 10 + int((i / total) * 80)
+                if i % 20 == 0:
+                    self.progress.emit(progress, f"Обработка элемента {i + 1}/{total}")
+
+                if "mesh" in elem_info:
+                    pv_mesh = elem_info["mesh"]
+
+                    # Конвертируем pyvista mesh в trimesh
+                    vertices = np.array(pv_mesh.points)
+                    faces = np.array(pv_mesh.faces)
+
+                    # Преобразуем faces из формата pyvista [n_points, i1, i2, i3] в формат trimesh [[i1,i2,i3], ...]
+                    if len(faces) > 0:
+                        # PyVista faces формат: [3, i1, i2, i3, 3, i4, i5, i6, ...]
+                        trimesh_faces = []
+                        j = 0
+                        while j < len(faces):
+                            num_points = faces[j]
+                            if num_points == 3:  # Треугольник
+                                trimesh_faces.append(
+                                    [faces[j + 1], faces[j + 2], faces[j + 3]]
+                                )
+                            elif (
+                                num_points == 4
+                            ):  # Квадрат - разбиваем на два треугольника
+                                trimesh_faces.append(
+                                    [faces[j + 1], faces[j + 2], faces[j + 3]]
+                                )
+                                trimesh_faces.append(
+                                    [faces[j + 1], faces[j + 3], faces[j + 4]]
+                                )
+                            j += num_points + 1
+
+                        if trimesh_faces:
+                            # Создаем trimesh объект
+                            mesh = trimesh.Trimesh(
+                                vertices=vertices, faces=trimesh_faces, process=False
+                            )
+
+                            # Добавляем атрибуты
+                            color = elem_info["color"]
+                            if isinstance(color, tuple):
+                                # Конвертируем RGB (0-1) в 0-255 для trimesh
+                                mesh.visual.vertex_colors = [
+                                    int(color[0] * 255),
+                                    int(color[1] * 255),
+                                    int(color[2] * 255),
+                                    255,  # Alpha
+                                ]
+
+                            # Сохраняем метаданные
+                            mesh.metadata["name"] = elem_info["name"]
+                            mesh.metadata["type"] = elem_info["type"]
+                            mesh.metadata["id"] = elem_id
+
+                            all_meshes.append(mesh)
+
+            self.progress.emit(90, "Объединение мешей...")
+
+            if all_meshes:
+                # Объединяем все меши в один
+                combined = trimesh.util.concatenate(all_meshes)
+
+                self.progress.emit(95, f"Сохранение GLB файла: {self.output_file}")
+
+                # Сохраняем в GLB
+                combined.export(self.output_file, file_type="glb")
+
+                self.progress.emit(100, "Конвертация завершена")
+                self.finished.emit(self.output_file)
+            else:
+                self.error.emit("Нет данных для конвертации")
+
+        except ImportError:
+            self.error.emit("Установите trimesh: pip install trimesh")
+        except Exception as e:
+            import traceback
+
+            self.error.emit(f"{str(e)}")
+
+
+class BatchConvertWorker1(QThread):
+    """Поток для пакетной конвертации нескольких IFC в один GLB"""
+
+    progress = pyqtSignal(int, str)
+    file_progress = pyqtSignal(str, int, int)  # filename, current, total
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, filepaths, output_file):
+        super().__init__()
+        self.filepaths = filepaths
+        self.output_file = output_file
+        self.stats = {"total_elements": 0, "total_meshes": 0}
+
+    def run(self):
+        try:
+            import ifcopenshell
+            import ifcopenshell.geom
+            import numpy as np
+            import trimesh
+
+            all_meshes = []
+            total_files = len(self.filepaths)
+            total_elements_processed = 0
+            total_meshes_created = 0
+
+            self.progress.emit(5, f"Начинаем обработку {total_files} файлов...")
+
+            for file_idx, filepath in enumerate(self.filepaths):
+                self.file_progress.emit(filepath, file_idx + 1, total_files)
+
+                # Загружаем IFC файл
+                progress_val = 10 + int((file_idx / total_files) * 80)
+                self.progress.emit(
+                    progress_val, f"Загрузка: {os.path.basename(filepath)}"
+                )
+
+                # Просто открываем без параметра lazy
+                ifc_file = ifcopenshell.open(filepath)
+
+                # Настройки геометрии
+                settings = ifcopenshell.geom.settings()
+                settings.set(settings.USE_WORLD_COORDS, True)
+
+                # Типы элементов для извлечения
+                geometry_types = [
+                    "IfcWall",
+                    "IfcWallStandardCase",
+                    "IfcSlab",
+                    "IfcBeam",
+                    "IfcColumn",
+                    "IfcDoor",
+                    "IfcWindow",
+                    "IfcRoof",
+                    "IfcStair",
+                    "IfcRamp",
+                    "IfcPlate",
+                    "IfcCovering",
+                    "IfcCurtainWall",
+                    "IfcBuildingElementProxy",
+                    "IfcMember",
+                    "IfcFooting",
+                    "IfcPile",
+                    "IfcRailing",
+                ]
+
+                elements_to_process = []
+                for elem_type in geometry_types:
+                    try:
+                        elements = ifc_file.by_type(elem_type)
+                        if elements:
+                            elements_to_process.extend(elements)
+                    except:
+                        pass
+
+                if not elements_to_process:
+                    elements_to_process = ifc_file.by_type("IfcProduct")
+
+                total_elements = len(elements_to_process)
+                total_elements_processed += total_elements
+                self.progress.emit(
+                    progress_val,
+                    f"Обработка {total_elements} элементов из {os.path.basename(filepath)}",
+                )
+
+                file_meshes = []
+
+                for elem_idx, element in enumerate(
+                    elements_to_process  # [:500]
+                ):  # Ограничиваем для производительности
+                    try:
+                        shape = ifcopenshell.geom.create_shape(settings, element)
+
+                        if shape and shape.geometry:
+                            verts = np.array(shape.geometry.verts).reshape(-1, 3)
+                            faces = shape.geometry.faces
+
+                            if len(verts) > 0 and len(faces) > 0:
+                                # Преобразуем грани
+                                trimesh_faces = []
+                                j = 0
+                                while j < len(faces):
+                                    num_points = faces[j]
+                                    if num_points == 3:
+                                        trimesh_faces.append(
+                                            [faces[j + 1], faces[j + 2], faces[j + 3]]
+                                        )
+                                    elif num_points == 4:
+                                        trimesh_faces.append(
+                                            [faces[j + 1], faces[j + 2], faces[j + 3]]
+                                        )
+                                        trimesh_faces.append(
+                                            [faces[j + 1], faces[j + 3], faces[j + 4]]
+                                        )
+                                    j += num_points + 1
+
+                                if trimesh_faces:
+                                    mesh = trimesh.Trimesh(
+                                        vertices=verts,
+                                        faces=trimesh_faces,
+                                        process=False,
+                                    )
+
+                                    # Получаем цвет
+                                    try:
+                                        materials = shape.geometry.materials
+                                        if materials and len(materials) > 0:
+                                            diffuse_value = str(materials[0].diffuse)
+                                            if (
+                                                diffuse_value
+                                                and diffuse_value.startswith("colour")
+                                            ):
+                                                parts = diffuse_value.split()
+                                                if len(parts) >= 4:
+                                                    r = float(parts[1])
+                                                    g = float(parts[2])
+                                                    b = float(parts[3])
+                                                    mesh.visual.vertex_colors = [
+                                                        int(r * 255),
+                                                        int(g * 255),
+                                                        int(b * 255),
+                                                        255,
+                                                    ]
+                                    except:
+                                        # Цвет по умолчанию
+                                        mesh.visual.vertex_colors = [200, 200, 200, 255]
+
+                                    # Добавляем метаданные
+                                    mesh.metadata["source_file"] = os.path.basename(
+                                        filepath
+                                    )
+                                    mesh.metadata["element_type"] = element.is_a()
+                                    mesh.metadata["element_id"] = str(element.id())
+
+                                    file_meshes.append(mesh)
+                                    total_meshes_created += 1
+                    except:
+                        continue
+
+                if file_meshes:
+                    all_meshes.extend(file_meshes)
+                    self.progress.emit(
+                        progress_val,
+                        f"Добавлено {len(file_meshes)} элементов из {os.path.basename(filepath)}",
+                    )
+                else:
+                    self.progress.emit(
+                        progress_val,
+                        f"Нет геометрии в файле {os.path.basename(filepath)}",
+                    )
+
+            self.stats["total_elements"] = total_elements_processed
+            self.stats["total_meshes"] = total_meshes_created
+
+            self.progress.emit(90, "Объединение всех мешей...")
+
+            if all_meshes:
+                # Объединяем все меши
+                combined = trimesh.util.concatenate(all_meshes)
+
+                self.progress.emit(95, f"Сохранение GLB файла: {self.output_file}")
+                combined.export(self.output_file, file_type="glb")
+
+                self.progress.emit(100, "Пакетная конвертация завершена!")
+                self.finished.emit(self.output_file)
+            else:
+                self.error.emit("Не удалось извлечь геометрию ни из одного файла")
+
+        except ImportError as e:
+            self.error.emit(
+                f"Установите необходимые библиотеки: pip install trimesh ifcopenshell numpy"
+            )
+        except Exception as e:
+            import traceback
+
+            self.error.emit(f"{str(e)}")
+
+
+class BatchConvertWorker_pyvista(QThread):
+    """Поток для пакетной конвертации нескольких IFC в один GLB"""
+
+    progress = pyqtSignal(int, str)
+    file_progress = pyqtSignal(str, int, int)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, filepaths, output_file):
+        super().__init__()
+        self.filepaths = filepaths
+        self.output_file = output_file
+        self.stats = {"total_elements": 0, "total_meshes": 0}
+
+    def run(self):
+        try:
+            import ifcopenshell
+            import ifcopenshell.geom
+            import numpy as np
+            import pyvista as pv
+
+            all_meshes = []
+            total_files = len(self.filepaths)
+            total_elements_processed = 0
+            total_meshes_created = 0
+
+            self.progress.emit(5, f"Начинаем обработку {total_files} файлов...")
+
+            for file_idx, filepath in enumerate(self.filepaths):
+                self.file_progress.emit(filepath, file_idx + 1, total_files)
+
+                progress_val = 10 + int((file_idx / total_files) * 80)
+                self.progress.emit(
+                    progress_val, f"Загрузка: {os.path.basename(filepath)}"
+                )
+
+                # Открываем IFC файл
+                ifc_file = ifcopenshell.open(filepath)
+
+                # Настройки геометрии
+                settings = ifcopenshell.geom.settings()
+                settings.set(settings.USE_WORLD_COORDS, True)
+                # settings.set(settings.INCLUDE_CURVES, True)
+
+                # Получаем все элементы с геометрией
+                elements_to_process = []
+                geometry_types = [
+                    "IfcWall",
+                    "IfcWallStandardCase",
+                    "IfcSlab",
+                    "IfcBeam",
+                    "IfcColumn",
+                    "IfcDoor",
+                    "IfcWindow",
+                    "IfcRoof",
+                    "IfcStair",
+                    "IfcRamp",
+                    "IfcPlate",
+                    "IfcCovering",
+                    "IfcCurtainWall",
+                    "IfcBuildingElementProxy",
+                    "IfcMember",
+                    "IfcFooting",
+                    "IfcPile",
+                    "IfcRailing",
+                ]
+
+                for elem_type in geometry_types:
+                    try:
+                        elements = ifc_file.by_type(elem_type)
+                        if elements:
+                            elements_to_process.extend(elements)
+                    except:
+                        pass
+
+                if not elements_to_process:
+                    elements_to_process = ifc_file.by_type("IfcProduct")
+
+                total_elements = len(elements_to_process)
+                total_elements_processed += total_elements
+                self.progress.emit(
+                    progress_val,
+                    f"Обработка {total_elements} элементов из {os.path.basename(filepath)}",
+                )
+
+                file_meshes = []
+
+                for elem_idx, element in enumerate(elements_to_process):
+                    try:
+                        # Создаем геометрию элемента
+                        shape = ifcopenshell.geom.create_shape(settings, element)
+
+                        if shape and shape.geometry:
+                            verts = np.array(shape.geometry.verts).reshape(-1, 3)
+                            faces = shape.geometry.faces
+
+                            if len(verts) > 0 and len(faces) > 0:
+                                # Преобразуем грани в формат PyVista
+                                pv_faces = []
+                                for j in range(0, len(faces), 3):
+                                    pv_faces.append(3)
+                                    pv_faces.append(int(faces[j]))
+                                    pv_faces.append(int(faces[j + 1]))
+                                    pv_faces.append(int(faces[j + 2]))
+
+                                # Создаем mesh PyVista
+                                mesh = pv.PolyData(verts, np.array(pv_faces))
+
+                                # Получаем цвет элемента
+                                color = (0.7, 0.7, 0.7)  # Цвет по умолчанию
+                                try:
+                                    materials = shape.geometry.materials
+                                    if materials and len(materials) > 0:
+                                        diffuse_value = str(materials[0].diffuse)
+                                        if diffuse_value and diffuse_value.startswith(
+                                            "colour"
+                                        ):
+                                            parts = diffuse_value.split()
+                                            if len(parts) >= 4:
+                                                color = (
+                                                    float(parts[1]),
+                                                    float(parts[2]),
+                                                    float(parts[3]),
+                                                )
+                                except:
+                                    pass
+
+                                # Сохраняем цвет в поле данных mesh
+                                mesh.field_data["color_r"] = [color[0]]
+                                mesh.field_data["color_g"] = [color[1]]
+                                mesh.field_data["color_b"] = [color[2]]
+                                mesh.field_data["source_file"] = [
+                                    os.path.basename(filepath)
+                                ]
+                                mesh.field_data["element_type"] = [element.is_a()]
+
+                                # Получаем имя элемента
+                                elem_name = getattr(
+                                    element, "Name", f"Unnamed_{element.id()}"
+                                )
+                                # mesh.field_data["element_name"] = [
+                                #    elem_name.encode("utf-8", "ignore")
+                                # ]
+
+                                file_meshes.append(mesh)
+                                total_meshes_created += 1
+
+                    except Exception as e:
+                        continue
+
+                if file_meshes:
+                    all_meshes.extend(file_meshes)
+                    self.progress.emit(
+                        progress_val,
+                        f"Добавлено {len(file_meshes)} элементов из {os.path.basename(filepath)}",
+                    )
+
+            self.stats["total_elements"] = total_elements_processed
+            self.stats["total_meshes"] = total_meshes_created
+
+            self.progress.emit(90, "Объединение всех мешей...")
+
+            if all_meshes:
+                # Объединяем все меши в один
+                combined = all_meshes[0]
+                for mesh in all_meshes[1:]:
+                    combined = combined.append_polydata(mesh)  # merge
+
+                self.progress.emit(95, f"Сохранение GLB файла: {self.output_file}")
+
+                # Сохраняем как GLB через PyVista
+                # Для GLB нужно использовать export_gltf с binary=True
+                try:
+                    # Пробуем сохранить как GLTF бинарный
+                    combined.save(self.output_file, binary=True)
+                except:
+                    # Если не получается, сохраняем как PLY и конвертируем
+                    import subprocess
+
+                    temp_ply = self.output_file.replace(".glb", "_temp.ply")
+                    combined.save(temp_ply, binary=False)
+                    self.progress.emit(97, "Конвертация PLY в GLB...")
+                    # Если есть trimesh, конвертируем через него
+                    try:
+                        import trimesh
+
+                        trimesh_mesh = trimesh.load(temp_ply)
+                        trimesh_mesh.export(self.output_file, file_type="glb")
+                        os.remove(temp_ply)
+                    except:
+                        # Если не получилось, сохраняем как PLY
+                        self.error.emit(
+                            f"Не удалось создать GLB, сохранен PLY файл: {temp_ply}"
+                        )
+                        return
+
+                self.progress.emit(100, "Пакетная конвертация завершена!")
+                self.finished.emit(self.output_file)
+            else:
+                self.error.emit("Не удалось извлечь геометрию ни из одного файла")
+
+        except Exception as e:
+            import traceback
+
+            self.error.emit(f"{str(e)}\n{traceback.format_exc()}")
+
+
+class BatchConvertWorker(QThread):
+    """Поток для пакетной конвертации нескольких IFC в один GLB (через trimesh)"""
+
+    progress = pyqtSignal(int, str)
+    file_progress = pyqtSignal(str, int, int)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, filepaths, output_file):
+        super().__init__()
+        self.filepaths = filepaths
+        self.output_file = output_file
+        self.stats = {"total_elements": 0, "total_meshes": 0}
+
+    def run(self):
+        try:
+            import ifcopenshell
+            import ifcopenshell.geom
+            import numpy as np
+            import trimesh
+
+            all_meshes = []
+            total_files = len(self.filepaths)
+
+            self.progress.emit(5, f"Начинаем обработку {total_files} файлов...")
+
+            for file_idx, filepath in enumerate(self.filepaths):
+                self.file_progress.emit(filepath, file_idx + 1, total_files)
+
+                progress_val = 10 + int((file_idx / total_files) * 80)
+                self.progress.emit(
+                    progress_val, f"Загрузка: {os.path.basename(filepath)}"
+                )
+
+                ifc_file = ifcopenshell.open(filepath)
+
+                # Настройки геометрии
+                settings = ifcopenshell.geom.settings()
+                settings.set(settings.USE_WORLD_COORDS, True)
+
+                # Получаем все элементы
+                elements = ifc_file.by_type("IfcProduct")
+
+                self.progress.emit(
+                    progress_val, f"Обработка {len(elements)} элементов..."
+                )
+
+                file_meshes = []
+
+                for elem_idx, element in enumerate(elements):
+                    if elem_idx % 50 == 0:
+                        self.progress.emit(
+                            progress_val, f"Элемент {elem_idx}/{len(elements)}"
+                        )
+
+                    try:
+                        shape = ifcopenshell.geom.create_shape(settings, element)
+
+                        if shape and shape.geometry:
+                            verts = np.array(shape.geometry.verts).reshape(-1, 3)
+                            faces = shape.geometry.faces
+
+                            if len(verts) > 0 and len(faces) > 0:
+                                # Формируем faces для trimesh
+                                trimesh_faces = []
+                                for j in range(0, len(faces), 3):
+                                    trimesh_faces.append(
+                                        [faces[j], faces[j + 1], faces[j + 2]]
+                                    )
+
+                                # Создаем mesh
+                                mesh = trimesh.Trimesh(
+                                    vertices=verts,
+                                    faces=trimesh_faces,
+                                    process=False,
+                                    validate=False,
+                                )
+
+                                # Сохраняем метаданные
+                                mesh.metadata["name"] = getattr(
+                                    element, "Name", f"Unnamed_{element.id()}"
+                                )
+                                mesh.metadata["type"] = element.is_a()
+                                mesh.metadata["source"] = os.path.basename(filepath)
+
+                                # Получаем и применяем цвет
+                                r, g, b = 0.7, 0.7, 0.7  # Цвет по умолчанию
+                                try:
+                                    materials = shape.geometry.materials
+                                    if materials and len(materials) > 0:
+                                        diffuse = str(materials[0].diffuse)
+                                        if diffuse and diffuse.startswith("colour"):
+                                            parts = diffuse.split()
+                                            if len(parts) >= 4:
+                                                r, g, b = (
+                                                    float(parts[1]),
+                                                    float(parts[2]),
+                                                    float(parts[3]),
+                                                )
+                                except:
+                                    pass
+
+                                # Применяем цвет ко всем вершинам
+                                mesh.visual.vertex_colors = [r, g, b, 1.0]
+
+                                file_meshes.append(mesh)
+
+                    except Exception as e:
+                        continue
+
+                if file_meshes:
+                    all_meshes.extend(file_meshes)
+                    self.progress.emit(
+                        progress_val, f"Добавлено {len(file_meshes)} элементов"
+                    )
+
+            self.progress.emit(90, "Объединение всех мешей...")
+
+            if all_meshes:
+                # Объединяем все меши
+                combined = trimesh.util.concatenate(all_meshes)
+
+                # Оптимизация
+                self.progress.emit(92, "Оптимизация геометрии...")
+                if hasattr(combined, "remove_unreferenced_vertices"):
+                    combined.remove_unreferenced_vertices()
+                if hasattr(combined, "merge_vertices"):
+                    combined.merge_vertices()
+                if hasattr(combined, "remove_degenerate_faces"):
+                    combined.remove_degenerate_faces()
+
+                self.progress.emit(95, f"Сохранение GLB файла...")
+                # Просто сохраняем GLB (цвета сохраняются автоматически)
+                combined.export(self.output_file, file_type="glb")
+
+                self.progress.emit(100, "Конвертация завершена!")
+                self.finished.emit(self.output_file)
+            else:
+                self.error.emit("Нет геометрии для экспорта")
+
+        except Exception as e:
+            import traceback
+
+            self.error.emit(f"{str(e)}")
+
+
 class IFCViewer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -181,6 +839,9 @@ class IFCViewer(QMainWindow):
         self.mesh = None
         self.element_actors = {}  # Словарь для хранения actor'ов
         self.highlighted_actor = None  # Текущий подсвеченный actor
+        self.visualization_worker = None  # Поток для визуализации
+        self.cancel_visualization = False  # Флаг отмены
+        self.selected_files = []  # Добавьте эту строку
         self.init_ui()
 
     def init_ui(self):
@@ -209,9 +870,14 @@ class IFCViewer(QMainWindow):
         self.read_btn.setEnabled(False)
         button_layout.addWidget(self.read_btn)
 
-        self.convert_btn = QPushButton("Конвертировать")
-        self.convert_btn.clicked.connect(lambda: self.show_message("Конвертировать"))
+        self.convert_btn = QPushButton("Конвертировать в GLB")
+        self.convert_btn.clicked.connect(self.convert_to_glb)
         button_layout.addWidget(self.convert_btn)
+
+        self.batch_convert_btn = QPushButton("Пакетная конвертация в GLB")
+        self.batch_convert_btn.clicked.connect(self.batch_convert_to_glb)
+        self.batch_convert_btn.setEnabled(False)
+        button_layout.addWidget(self.batch_convert_btn)
 
         self.merge_btn = QPushButton("Объединить")
         self.merge_btn.clicked.connect(lambda: self.show_message("Объединить"))
@@ -238,6 +904,7 @@ class IFCViewer(QMainWindow):
 
         # Список IFC файлов
         self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.file_list.itemSelectionChanged.connect(self.on_file_selected)
         left_layout.addWidget(QLabel("IFC файлы:"))
         left_layout.addWidget(self.file_list)
@@ -268,6 +935,12 @@ class IFCViewer(QMainWindow):
 
         self.right_tabs = QTabWidget()
 
+        # Вкладка логов
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Courier New", 12))
+        self.right_tabs.addTab(self.log_text, "Логи")
+
         # Вкладка атрибутов
         self.attributes_table = QTableWidget()
         self.attributes_table.setColumnCount(3)
@@ -279,11 +952,34 @@ class IFCViewer(QMainWindow):
         )
         self.right_tabs.addTab(self.attributes_table, "Атрибуты")
 
-        # Вкладка логов
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Courier New", 12))
-        self.right_tabs.addTab(self.log_text, "Логи")
+        # Вкладка свойств IfcPropertySet (новая)
+        self.properties_table = QTableWidget()
+        self.properties_table.setColumnCount(3)
+        self.properties_table.setHorizontalHeaderLabels(
+            ["Набор свойств", "Свойство", "Значение"]
+        )
+        self.properties_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.right_tabs.addTab(self.properties_table, "Свойства IFC")
+
+        # Вкладка материалов (новая)
+        self.materials_table = QTableWidget()
+        self.materials_table.setColumnCount(2)
+        self.materials_table.setHorizontalHeaderLabels(["Материал", "Объем (м³)"])
+        self.materials_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.right_tabs.addTab(self.materials_table, "Материалы")
+
+        # Вкладка статистики (новая)
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(2)
+        self.stats_table.setHorizontalHeaderLabels(["Параметр", "Значение"])
+        self.stats_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.right_tabs.addTab(self.stats_table, "Статистика")
 
         right_layout.addWidget(self.right_tabs)
         main_splitter.addWidget(right_widget)
@@ -303,7 +999,7 @@ class IFCViewer(QMainWindow):
         try:
             # Создаем QtInteractor для интеграции с PyQt
             self.plotter = QtInteractor(self.pyvista_widget)
-            self.plotter.set_background("silver")  # Silver фон
+            self.plotter.set_background("gray")  # Silver фон
 
             # Добавляем оси для ориентации
             self.plotter.show_axes()
@@ -325,21 +1021,26 @@ class IFCViewer(QMainWindow):
         controls_group = QGroupBox("Режимы визуализации")
         controls_layout = QHBoxLayout()
 
-        self.style_btn = QPushButton("Стиль: Solid")
-        self.style_btn.clicked.connect(self.toggle_visualization_style)
-        controls_layout.addWidget(self.style_btn)
+        self.cancel_btn = QPushButton("Отменить")
+        self.cancel_btn.clicked.connect(self.cancel_visualization_loading)
+        self.cancel_btn.setEnabled(True)
+        controls_layout.addWidget(self.cancel_btn)
 
         # Исправленный слайдер прозрачности
         controls_layout.addWidget(QLabel("Прозрачность:"))
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setMinimum(0)
         self.opacity_slider.setMaximum(100)
-        self.opacity_slider.setValue(70)
+        self.opacity_slider.setValue(100)
         self.opacity_slider.valueChanged.connect(self.change_opacity)
         controls_layout.addWidget(self.opacity_slider)
 
-        self.opacity_label = QLabel("70%")
+        self.opacity_label = QLabel("100%")
         controls_layout.addWidget(self.opacity_label)
+
+        self.style_btn = QPushButton("Стиль: Solid")
+        self.style_btn.clicked.connect(self.toggle_visualization_style)
+        controls_layout.addWidget(self.style_btn)
 
         self.grid_btn = QPushButton("Сетка: Вкл")
         self.grid_btn.clicked.connect(self.toggle_grid)
@@ -460,6 +1161,7 @@ class IFCViewer(QMainWindow):
             self.log(f"Выбрана директория: {directory}")
             self.current_directory = directory
             self.load_ifc_files_from_directory(directory)
+            self.batch_convert_btn.setEnabled(True)  # Добавьте эту строку
 
     def load_ifc_files_from_directory(self, directory):
         """Загрузка списка IFC файлов из директории с размерами"""
@@ -492,31 +1194,53 @@ class IFCViewer(QMainWindow):
             self.log(f"Найдено {self.file_list.count()} IFC файлов")
 
     def on_file_selected(self):
-        """Обработка выбора файла из списка"""
+        """Обработка выбора файлов из списка"""
         selected_items = self.file_list.selectedItems()
         if selected_items:
-            # Получаем реальное имя файла из данных
-            self.selected_filename = selected_items[0].data(Qt.ItemDataRole.UserRole)
-            if not self.selected_filename:
-                # Fallback: извлекаем из отображаемого текста
-                text = selected_items[0].text()
-                self.selected_filename = text.split("  [")[0]
+            # Сохраняем список выбранных файлов
+            self.selected_files = []
+            for item in selected_items:
+                filename = item.data(Qt.ItemDataRole.UserRole)
+                if not filename:
+                    # Fallback: извлекаем из отображаемого текста
+                    text = item.text()
+                    filename = text.split("  [")[0]
+                self.selected_files.append(filename)
+
+            # Читать можно только один файл (первый выбранный)
             self.read_btn.setEnabled(True)
-            self.log(f"Выбран файл: {self.selected_filename}")
+            # Конвертировать можно 1 или более файлов
+            self.batch_convert_btn.setEnabled(len(self.selected_files) >= 1)
+
+            self.log(f"Выбрано файлов: {len(self.selected_files)}")
+            if len(self.selected_files) == 1:
+                self.log(f"Выбран файл: {self.selected_files[0]}")
+            else:
+                self.log(
+                    f"Выбраны файлы: {', '.join(self.selected_files[:5])}{'...' if len(self.selected_files) > 5 else ''}"
+                )
         else:
             self.read_btn.setEnabled(False)
+            self.batch_convert_btn.setEnabled(False)
+            self.selected_files = []
 
     def read_ifc_file(self):
         """Чтение выбранного IFC файла"""
-        if not hasattr(self, "selected_filename") or not hasattr(
-            self, "current_directory"
-        ):
+        # Проверяем, что есть выбранные файлы
+        if not hasattr(self, "selected_files") or not self.selected_files:
             self.log("Ошибка: Файл не выбран")
             return
 
-        filepath = os.path.join(self.current_directory, self.selected_filename)
+        # Берем первый выбранный файл (для чтения)
+        selected_filename = self.selected_files[0]
 
-        self.log(f"Начинаем загрузку файла: {self.selected_filename}")
+        if not hasattr(self, "current_directory"):
+            self.log("Ошибка: Директория не выбрана")
+            return
+
+        filepath = os.path.join(self.current_directory, selected_filename)
+
+        self.log(f"Начинаем загрузку файла: {selected_filename}")
 
         # Запускаем загрузку в отдельном потоке
         self.progress_bar.setVisible(True)
@@ -542,7 +1266,7 @@ class IFCViewer(QMainWindow):
         self.log("\n" + "=" * 60)
         self.log("СТАТИСТИКА ЗАГРУЗКИ IFC ФАЙЛА")
         self.log("=" * 60)
-        self.log(f"Файл: {self.selected_filename}")
+        self.log(f"Файл: {self.selected_files[0]}")
         self.log(f"Размер файла: {stats.file_size_mb:.2f} MB")
         self.log(f"Общее время загрузки: {stats.total_time:.3f} сек")
         self.log(f"\n--- Детализация по категориям ---")
@@ -565,17 +1289,246 @@ class IFCViewer(QMainWindow):
             f"\nПамять: {'Lazy режим (оптимизирован для больших файлов)' if stats.file_size_mb > 100 else 'Полная загрузка в RAM'}"
         )
         self.log("=" * 60)
-
+        try:
+            ifc_schema = self.ifc_file.schema
+            self.log(f"Версия IFC: {ifc_schema}")
+        except:
+            self.log("Версия IFC: не определена")
+        self.log(f"\n--- Информация о файле ---")
+        self.log(
+            f"Версия IFC: {ifc_file.schema if hasattr(ifc_file, 'schema') else 'неизвестно'}"
+        )
         # Обновление дерева иерархии
         self.update_tree(hierarchy)
 
         # Визуализация модели
         self.visualize_model()
+        # Обновляем статистику после визуализации (отложенно)
+        QApplication.processEvents()
+        self.update_statistics()
 
     def on_load_error(self, error_msg):
         """Обработка ошибки загрузки"""
         self.progress_bar.setVisible(False)
         self.log(f"ОШИБКА загрузки: {error_msg}")
+
+    def update_statistics(self):
+        """Обновление вкладки статистики"""
+        if not self.ifc_file:
+            return
+
+        self.log("Сбор статистики модели...")
+
+        # Счетчики
+        type_counts = defaultdict(int)
+        materials_set = set()
+        total_volume = 0.0
+        floors_data = defaultdict(list)
+
+        # Настройки геометрии
+        settings = ifcopenshell.geom.settings()
+        settings.set(settings.USE_WORLD_COORDS, True)
+
+        # Получаем все элементы
+        elements = self.ifc_file.by_type("IfcProduct")
+
+        # Собираем этажи
+        floors = {}
+        for floor in self.ifc_file.by_type("IfcBuildingStorey"):
+            floor_name = getattr(floor, "Name", f"Level_{floor.id()}")
+            floors[floor.id()] = floor_name
+
+        # Проходим по элементам в element_actors (уже загруженная геометрия)
+        for elem_id, elem_info in self.element_actors.items():
+            elem_type = elem_info["type"]
+            type_counts[elem_type] += 1
+
+            # Собираем материалы
+            try:
+                # Ищем элемент в IFC
+                element = None
+                try:
+                    element = (
+                        self.ifc_file.by_guid(elem_id) if elem_id != "N/A" else None
+                    )
+                except:
+                    pass
+
+                if element:
+                    # Получаем материалы
+                    if hasattr(element, "HasAssociations"):
+                        for rel in element.HasAssociations:
+                            if rel.is_a("IfcRelAssociatesMaterial"):
+                                material = rel.RelatingMaterial
+                                if material.is_a("IfcMaterial"):
+                                    mat_name = getattr(material, "Name", "Unknown")
+                                    materials_set.add(mat_name)
+            except:
+                pass
+
+            # Вычисляем объем
+            actor = elem_info["actor"]
+            bounds = actor.GetBounds()
+            if bounds and len(bounds) == 6:
+                volume = (
+                    (bounds[1] - bounds[0])
+                    * (bounds[3] - bounds[2])
+                    * (bounds[5] - bounds[4])
+                )
+                total_volume += volume
+
+        # Заполняем таблицу статистики
+        self.stats_table.setRowCount(0)
+
+        # Общая информация
+        stats_data = [
+            ("Всего элементов", len(self.element_actors)),
+            ("Всего типов элементов", len(type_counts)),
+            ("Общий объем модели (м³)", f"{total_volume:.2f}"),
+            ("Количество уникальных материалов", len(materials_set)),
+            (
+                "Материалы",
+                ", ".join(list(materials_set)[:10])
+                + ("..." if len(materials_set) > 10 else ""),
+            ),
+        ]
+
+        for stat_name, stat_value in stats_data:
+            row = self.stats_table.rowCount()
+            self.stats_table.insertRow(row)
+            self.stats_table.setItem(row, 0, QTableWidgetItem(stat_name))
+            self.stats_table.setItem(row, 1, QTableWidgetItem(str(stat_value)))
+
+        # Добавляем разделитель
+        row = self.stats_table.rowCount()
+        self.stats_table.insertRow(row)
+        self.stats_table.setItem(
+            row, 0, QTableWidgetItem("--- Распределение по типам ---")
+        )
+        self.stats_table.setItem(row, 1, QTableWidgetItem(""))
+
+        # Распределение по типам (сортировка по количеству)
+        for elem_type, count in sorted(
+            type_counts.items(), key=lambda x: x[1], reverse=True
+        ):
+            row = self.stats_table.rowCount()
+            self.stats_table.insertRow(row)
+            self.stats_table.setItem(row, 0, QTableWidgetItem(f"  {elem_type}"))
+            self.stats_table.setItem(row, 1, QTableWidgetItem(str(count)))
+
+        self.log(
+            f"Статистика собрана: {len(self.element_actors)} элементов, {total_volume:.2f} м³, {len(materials_set)} материалов"
+        )
+
+    def batch_convert_to_glb(self):
+        """Пакетная конвертация выбранных IFC файлов из списка в один GLB"""
+        if not hasattr(self, "selected_files") or not self.selected_files:
+            self.log("Нет выбранных файлов. Выберите файлы из списка.")
+            return
+
+        if not hasattr(self, "current_directory"):
+            self.log("Сначала выберите директорию с IFC файлами")
+            return
+
+        # Выбираем выходной GLB файл
+        output_file, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить объединенный GLB файл",
+            self.current_directory,
+            "GLB Files (*.glb);;All Files (*)",
+        )
+
+        if not output_file:
+            return
+
+        filepaths = [
+            os.path.join(self.current_directory, f) for f in self.selected_files
+        ]
+
+        self.log(
+            f"Начинаем пакетную конвертацию {len(filepaths)} файлов в {output_file}"
+        )
+        self.log(f"Файлы для конвертации: {', '.join(self.selected_files)}")
+
+        # Запускаем конвертацию в отдельном потоке BatchConvertWorker_pyvista
+        self.batch_worker = BatchConvertWorker(filepaths, output_file)
+        self.batch_worker.progress.connect(self.update_progress)
+        self.batch_worker.file_progress.connect(self.batch_file_progress)
+        self.batch_worker.finished.connect(self.on_batch_finished)
+        self.batch_worker.error.connect(self.on_convert_error)
+        self.batch_worker.start()
+
+        self.progress_bar.setVisible(True)
+        self.batch_convert_btn.setEnabled(False)
+        self.read_btn.setEnabled(False)
+
+    def batch_file_progress(self, filename, current, total):
+        """Прогресс обработки текущего файла"""
+        self.log(f"[{current}/{total}] Обработка: {os.path.basename(filename)}")
+
+    def on_batch_finished(self, output_file):
+        """Обработка завершения пакетной конвертации"""
+        self.progress_bar.setVisible(False)
+        self.batch_convert_btn.setEnabled(True)
+        self.read_btn.setEnabled(
+            len(self.selected_files) == 1 if hasattr(self, "selected_files") else False
+        )
+        self.log(f"Пакетная конвертация завершена! Файл сохранен: {output_file}")
+
+        # Выводим статистику
+        if hasattr(self.batch_worker, "stats"):
+            self.log(
+                f"Всего обработано элементов: {self.batch_worker.stats.get('total_elements', 0)}"
+            )
+            self.log(
+                f"Всего добавлено мешей: {self.batch_worker.stats.get('total_meshes', 0)}"
+            )
+
+        # Предлагаем открыть файл
+        reply = QMessageBox.question(
+            self,
+            "Конвертация завершена",
+            f"Объединенная модель сохранена в:\n{output_file}\n\nОткрыть файл?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import platform
+            import subprocess
+
+            if platform.system() == "Windows":
+                os.startfile(output_file)
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", output_file])
+            else:
+                subprocess.run(["xdg-open", output_file])
+
+    def batch_file_progress(self, filename, current, total):
+        """Прогресс обработки текущего файла"""
+        self.log(f"[{current}/{total}] Обработка: {os.path.basename(filename)}")
+
+    def on_batch_finished(self, output_file):
+        """Обработка завершения пакетной конвертации"""
+        self.progress_bar.setVisible(False)
+        self.batch_convert_btn.setEnabled(True)
+        self.log(f"Пакетная конвертация завершена! Файл сохранен: {output_file}")
+
+        # Предлагаем открыть файл
+        reply = QMessageBox.question(
+            self,
+            "Конвертация завершена",
+            f"Объединенная модель сохранена в:\n{output_file}\n\nОткрыть файл?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import platform
+            import subprocess
+
+            if platform.system() == "Windows":
+                os.startfile(output_file)
+            elif platform.system() == "Darwin":
+                subprocess.run(["open", output_file])
+            else:
+                subprocess.run(["xdg-open", output_file])
 
     def update_tree(self, hierarchy):
         """Обновление дерева иерархии"""
@@ -590,23 +1543,154 @@ class IFCViewer(QMainWindow):
             total_elements += elem_count
             category_item.setText(0, f"{category_name} ({elem_count} эл.)")
 
-            # Добавляем только первые 50 элементов для производительности
-            for elem in category_data["elements"][:50]:
+            # Добавляем только первые 50  [:50] элементов для производительности
+            for elem in category_data["elements"]:
                 elem_item = QTreeWidgetItem([f"{elem['name']} (ID: {elem['id']})"])
                 elem_item.setData(0, Qt.ItemDataRole.UserRole, elem)
                 category_item.addChild(elem_item)
 
-            if len(category_data["elements"]) > 50:
+            """if len(category_data["elements"]) > 50:
                 more_item = QTreeWidgetItem(
                     [f"... и еще {len(category_data['elements']) - 50} элементов"]
                 )
-                category_item.addChild(more_item)
+                category_item.addChild(more_item)"""
 
             self.tree.addTopLevelItem(category_item)
 
         self.log(
             f"Построена иерархия: {len(hierarchy['children'])} категорий, {total_elements} элементов"
         )
+
+    def get_element_properties(self, element):
+        """Извлечение всех свойств IfcPropertySet для элемента"""
+        properties = []
+
+        try:
+            # Ищем IfcRelDefinesByProperties
+            if hasattr(element, "IsDefinedBy"):
+                for rel in element.IsDefinedBy:
+                    if rel.is_a("IfcRelDefinesByProperties"):
+                        property_set = rel.RelatingPropertyDefinition
+
+                        if property_set.is_a("IfcPropertySet"):
+                            set_name = getattr(property_set, "Name", "Unnamed")
+
+                            # Извлекаем все свойства
+                            if hasattr(property_set, "HasProperties"):
+                                for prop in property_set.HasProperties:
+                                    prop_name = getattr(prop, "Name", "Unknown")
+
+                                    # Получаем значение свойства
+                                    prop_value = "N/A"
+                                    if prop.is_a("IfcPropertySingleValue"):
+                                        if prop.NominalValue:
+                                            prop_value = str(
+                                                prop.NominalValue.wrappedValue
+                                            )
+                                    elif prop.is_a("IfcPropertyEnumeratedValue"):
+                                        if prop.EnumerationValues:
+                                            values = [
+                                                str(v.wrappedValue)
+                                                for v in prop.EnumerationValues
+                                            ]
+                                            prop_value = ", ".join(values)
+                                    elif prop.is_a("IfcPropertyListValue"):
+                                        if prop.ListValues:
+                                            values = [
+                                                str(v.wrappedValue)
+                                                for v in prop.ListValues
+                                            ]
+                                            prop_value = ", ".join(values)
+                                    elif prop.is_a("IfcPropertyBoundedValue"):
+                                        values = []
+                                        if prop.UpperBoundValue:
+                                            values.append(
+                                                f"≤{prop.UpperBoundValue.wrappedValue}"
+                                            )
+                                        if prop.LowerBoundValue:
+                                            values.append(
+                                                f"≥{prop.LowerBoundValue.wrappedValue}"
+                                            )
+                                        prop_value = " ".join(values)
+
+                                    properties.append(
+                                        {
+                                            "set": set_name,
+                                            "name": prop_name,
+                                            "value": prop_value,
+                                        }
+                                    )
+        except Exception as e:
+            pass
+
+        return properties
+
+    def get_element_materials_with_volume(self, element):
+        """Извлечение материалов элемента и их объемов"""
+        materials_info = []
+
+        try:
+            # Получаем геометрию для расчета объема
+            settings = ifcopenshell.geom.settings()
+            settings.set(settings.USE_WORLD_COORDS, True)
+            shape = ifcopenshell.geom.create_shape(settings, element)
+
+            if shape and shape.geometry:
+                verts = np.array(shape.geometry.verts).reshape(-1, 3)
+                faces = shape.geometry.faces
+
+                if len(verts) > 0 and len(faces) > 0:
+                    # Вычисляем объем через pyvista
+                    import pyvista as pv
+
+                    pv_faces = []
+                    for j in range(0, len(faces), 3):
+                        pv_faces.append(3)
+                        pv_faces.append(int(faces[j]))
+                        pv_faces.append(int(faces[j + 1]))
+                        pv_faces.append(int(faces[j + 2]))
+
+                    mesh = pv.PolyData(verts, np.array(pv_faces))
+                    volume = mesh.volume
+
+            # Ищем материалы
+            if hasattr(element, "HasAssociations"):
+                for rel in element.HasAssociations:
+                    if rel.is_a("IfcRelAssociatesMaterial"):
+                        material = rel.RelatingMaterial
+
+                        if material.is_a("IfcMaterial"):
+                            material_name = getattr(material, "Name", "Unknown")
+                            materials_info.append(
+                                {
+                                    "name": material_name,
+                                    "volume": volume if "volume" in locals() else 0,
+                                }
+                            )
+                        elif material.is_a("IfcMaterialLayerSetUsage"):
+                            if hasattr(material, "ForLayerSet"):
+                                for layer in material.ForLayerSet.MaterialLayers:
+                                    if layer.Material:
+                                        mat_name = getattr(
+                                            layer.Material, "Name", "Unknown"
+                                        )
+                                        # Расчет объема слоя (приблизительно)
+                                        layer_volume = (
+                                            volume if "volume" in locals() else 0
+                                        )
+                                        materials_info.append(
+                                            {
+                                                "name": mat_name,
+                                                "volume": layer_volume
+                                                / len(
+                                                    material.ForLayerSet.MaterialLayers
+                                                ),
+                                            }
+                                        )
+        except Exception as e:
+            pass
+
+        return materials_info if materials_info else [{"name": "Unknown", "volume": 0}]
 
     def get_element_material_color(self, shape):
         """Извлечение цвета материала из геометрии shape (рабочий способ)"""
@@ -844,6 +1928,15 @@ class IFCViewer(QMainWindow):
         else:
             return (0.7, 0.7, 0.8)  # Цвет по умолчанию
 
+    def cancel_visualization_loading(self):
+        """Отмена загрузки визуализации"""
+        self.cancel_visualization = True
+        if self.visualization_worker and self.visualization_worker.isRunning():
+            self.visualization_worker.terminate()
+            self.visualization_worker.wait()
+        self.log("Визуализация отменена пользователем")
+        self.progress_bar.setVisible(False)
+
     def visualize_model(self):
         """Визуализация всех элементов модели IFC с сохранением каждого элемента отдельно"""
         if not self.ifc_file:
@@ -919,7 +2012,7 @@ class IFCViewer(QMainWindow):
             # Обрабатываем каждый элемент отдельно
             for i, element in enumerate(elements_to_process):
                 progress = int((i / total_elements) * 90)
-                if i % 10 == 0:
+                if i % 50 == 0:
                     self.progress_bar.setValue(progress)
                     self.log(
                         f"Обработка: {i + 1}/{total_elements} (добавлено: {success_count})"
@@ -982,6 +2075,7 @@ class IFCViewer(QMainWindow):
                             # Сохраняем информацию об элементе
                             self.element_actors[elem_id] = {
                                 "actor": actor,
+                                "mesh": mesh,
                                 "color": color,
                                 "name": elem_name,
                                 "type": elem_type,
@@ -1130,6 +2224,26 @@ class IFCViewer(QMainWindow):
             # Отображаем атрибуты
             self.attributes_table.setRowCount(0)
 
+            # Получаем ID элемента
+            element_id = data.get("global_id") or data.get("id")
+            element_name = data.get("name", "Unknown")
+
+            # Находим элемент в IFC файле
+            element = None
+            if hasattr(self, "ifc_file") and self.ifc_file:
+                try:
+                    # Ищем элемент по GlobalId
+                    if element_id != "N/A":
+                        element = self.ifc_file.by_guid(element_id)
+                    else:
+                        # Ищем по id
+                        for elem in self.ifc_file.by_type("IfcProduct"):
+                            if elem.id() == element_id:
+                                element = elem
+                                break
+                except:
+                    pass
+
             if isinstance(data, dict):
                 row = 0
                 for key, value in data.items():
@@ -1146,7 +2260,38 @@ class IFCViewer(QMainWindow):
                         )
                         row += 1
 
-                # Получаем ID элемента
+                # Отображаем свойства IfcPropertySet
+                self.properties_table.setRowCount(0)
+                if element:
+                    properties = self.get_element_properties(element)
+                    for prop in properties:
+                        row = self.properties_table.rowCount()
+                        self.properties_table.insertRow(row)
+                        self.properties_table.setItem(
+                            row, 0, QTableWidgetItem(prop["set"])
+                        )
+                        self.properties_table.setItem(
+                            row, 1, QTableWidgetItem(prop["name"])
+                        )
+                        self.properties_table.setItem(
+                            row, 2, QTableWidgetItem(prop["value"])
+                        )
+
+                # Отображаем материалы с объемами
+                self.materials_table.setRowCount(0)
+                if element:
+                    materials = self.get_element_materials_with_volume(element)
+                    for mat in materials:
+                        row = self.materials_table.rowCount()
+                        self.materials_table.insertRow(row)
+                        self.materials_table.setItem(
+                            row, 0, QTableWidgetItem(mat["name"])
+                        )
+                        self.materials_table.setItem(
+                            row, 1, QTableWidgetItem(f"{mat['volume']:.3f}")
+                        )
+
+                # ... остальной код подсветки и фокусировки камеры ...
                 element_id = data.get("global_id") or data.get("id")
                 element_name = data.get("name", "Unknown")
 
@@ -1184,21 +2329,57 @@ class IFCViewer(QMainWindow):
 
                     self.highlighted_actor = actor
 
-                    # Фокусируем камеру на элементе
+                    # Фокусируем камеру на элементе (ИСПРАВЛЕННЫЙ КОД)
                     try:
                         bounds = actor.GetBounds()
                         if bounds and len(bounds) == 6:
+                            # Вычисляем центр элемента
                             center_x = (bounds[0] + bounds[1]) / 2
                             center_y = (bounds[2] + bounds[3]) / 2
                             center_z = (bounds[4] + bounds[5]) / 2
 
-                            # Устанавливаем камеру на элемент
-                            self.plotter.camera_position = [
-                                (center_x, center_y, center_z + 10),
-                                (center_x, center_y, center_z),
-                                (0, 0, 1),
-                            ]
-                            self.plotter.reset_camera()
+                            # Устанавливаем точку фокуса камеры
+                            self.plotter.camera.focal_point = (
+                                center_x,
+                                center_y,
+                                center_z,
+                            )
+
+                            # Вычисляем расстояние до камеры на основе размера элемента
+                            size_x = bounds[1] - bounds[0]
+                            size_y = bounds[3] - bounds[2]
+                            size_z = bounds[5] - bounds[4]
+                            max_size = max(size_x, size_y, size_z)
+                            distance = max(10, max_size * 2)
+
+                            # Устанавливаем позицию камеры
+                            current_pos = self.plotter.camera.position
+                            direction = (
+                                current_pos[0] - center_x,
+                                current_pos[1] - center_y,
+                                current_pos[2] - center_z,
+                            )
+                            length = (
+                                direction[0] ** 2
+                                + direction[1] ** 2
+                                + direction[2] ** 2
+                            ) ** 0.5
+                            if length > 0:
+                                direction = (
+                                    direction[0] / length,
+                                    direction[1] / length,
+                                    direction[2] / length,
+                                )
+
+                            new_pos = (
+                                center_x + direction[0] * distance,
+                                center_y + direction[1] * distance,
+                                center_z + direction[2] * distance,
+                            )
+                            self.plotter.camera.position = new_pos
+
+                            # Обновляем вид
+                            self.plotter.camera.view_up = (0, 0, 1)
                             self.plotter.render()
 
                             self.log(f"Камера сфокусирована на элементе {element_name}")
@@ -1218,6 +2399,70 @@ class IFCViewer(QMainWindow):
         self.log_text.append(f"[{time.strftime('%H:%M:%S')}] {message}")
         # Автопрокрутка вниз
         self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+
+    def convert_to_glb(self):
+        """Конвертация IFC модели в GLB формат с атрибутами"""
+        if not self.ifc_file:
+            self.log("Нет загруженной модели для конвертации")
+            return
+
+        if not hasattr(self, "element_actors") or not self.element_actors:
+            self.log(
+                "Нет загруженной геометрии для конвертации. Сначала загрузите модель."
+            )
+            return
+
+        # Выбираем файл для сохранения
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить GLB файл",
+            self.current_directory if hasattr(self, "current_directory") else "",
+            "GLB Files (*.glb);;All Files (*)",
+        )
+
+        if not filepath:
+            return
+
+        self.log(f"Начинаем конвертацию в GLB: {filepath}")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Запускаем конвертацию в отдельном потоке
+        self.convert_worker = ConvertWorker(
+            self.ifc_file, self.element_actors, filepath
+        )
+        self.convert_worker.progress.connect(self.update_progress)
+        self.convert_worker.finished.connect(self.on_convert_finished)
+        self.convert_worker.error.connect(self.on_convert_error)
+        self.convert_worker.start()
+
+    def on_convert_finished(self, output_file):
+        """Обработка завершения конвертации"""
+        self.progress_bar.setVisible(False)
+        self.log(f"Конвертация в GLB завершена! Файл сохранен: {output_file}")
+
+        # Предлагаем открыть файл
+        reply = QMessageBox.question(
+            self,
+            "Конвертация завершена",
+            f"Модель сконвертирована в GLB:\n{output_file}\n\nОткрыть файл?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import platform
+            import subprocess
+
+            if platform.system() == "Windows":
+                os.startfile(output_file)
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", output_file])
+            else:  # Linux
+                subprocess.run(["xdg-open", output_file])
+
+    def on_convert_error(self, error_msg):
+        """Обработка ошибки конвертации"""
+        self.progress_bar.setVisible(False)
+        self.log(f"ОШИБКА конвертации: {error_msg}")
 
 
 def main():
