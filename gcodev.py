@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -201,19 +202,134 @@ class GCodeApp(QMainWindow):
         self.measure_label = QLabel("Расстояние: —")
         panel.addWidget(self.measure_label)
 
+        panel.addWidget(QFrame(frameShape=QFrame.HLine))
+
+        # Section tools group
+        section_group = QGroupBox("Сечение модели")
+        section_layout = QVBoxLayout()
+
+        # Enable/disable section box widget
+        self.section_enabled = False
+        self.btn_section = QPushButton("Включить сечение")
+        self.btn_section.setCheckable(True)
+        self.btn_section.clicked.connect(self.toggle_section_widget)
+        section_layout.addWidget(self.btn_section)
+
+        # Reset section button
+        btn_reset_section = QPushButton("Сбросить сечение")
+        btn_reset_section.clicked.connect(self.reset_section_widget)
+        section_layout.addWidget(btn_reset_section)
+
+        section_group.setLayout(section_layout)
+        panel.addWidget(section_group)
+
         panel.addStretch()
         main_layout.addLayout(panel, 1)
         main_layout.addWidget(self.plotter.interactor, 4)
 
-        # Measurement state
+        # State variables
         self.measuring_mode = False
         self.measure_points = []
         self.measure_actors = []
 
-        # Mesh and actor
         self.mesh = None
         self.actor = None
         self.tube_filter = None
+        self.clip_box_widget = None
+        self.original_bounds = None
+
+    # ========== Section Widget ==========
+    def toggle_section_widget(self, checked):
+        if checked:
+            self.enable_section_widget()
+            self.btn_section.setText("Выключить сечение")
+        else:
+            self.disable_section_widget()
+            self.btn_section.setText("Включить сечение")
+
+    def enable_section_widget(self):
+        if not self.actor:
+            print("Сначала загрузите модель")
+            self.btn_section.setChecked(False)
+            return
+
+        # Store original bounds if not already stored
+        if self.original_bounds is None:
+            self.original_bounds = self.actor.bounds
+
+        # Store original mapper
+        if not hasattr(self, "original_mapper"):
+            self.original_mapper = self.actor.GetMapper()
+
+        # Create box widget for clipping
+        self.clip_box_widget = self.plotter.add_box_widget(
+            callback=self.update_clip,
+            bounds=self.original_bounds,
+            color="red",
+            rotation_enabled=False,
+        )
+        self.section_enabled = True
+
+    def disable_section_widget(self):
+        if self.clip_box_widget:
+            try:
+                self.plotter.remove_actor(self.clip_box_widget)
+            except:
+                # If remove_actor fails, try alternative method
+                pass
+            self.clip_box_widget = None
+
+        # Remove clip filter if exists
+        if hasattr(self, "clip_filter") and self.clip_filter:
+            if self.actor and hasattr(self, "original_mapper") and self.original_mapper:
+                self.actor.SetMapper(self.original_mapper)
+
+        self.section_enabled = False
+        self.plotter.render()
+
+    def update_clip(self, box_widget):
+        """Callback function for box widget - clips the model"""
+        if not self.actor or not box_widget:
+            return
+
+        # Get box bounds - box_widget is a vtkBoxWidget, not vtkPlanes
+        try:
+            # Get bounds from the widget
+            bounds = [0, 0, 0, 0, 0, 0]
+            box_widget.GetBounds(bounds)
+        except:
+            # Fallback: use original bounds
+            bounds = self.original_bounds
+
+        # Apply clipping using vtkClipPolyData
+        if not hasattr(self, "clip_filter"):
+            self.clip_filter = vtk.vtkClipPolyData()
+
+        # Create implicit function for box clipping
+        box = vtk.vtkBox()
+        box.SetBounds(bounds)
+
+        # Configure clip filter
+        self.clip_filter.SetInputData(self.original_mesh)
+        self.clip_filter.SetClipFunction(box)
+        self.clip_filter.SetInsideOut(True)  # Keep inside of box
+        self.clip_filter.Update()
+
+        # Create new mapper with clipped data
+        clipped_mapper = vtk.vtkPolyDataMapper()
+        clipped_mapper.SetInputConnection(self.clip_filter.GetOutputPort())
+
+        # Apply to actor
+        self.actor.SetMapper(clipped_mapper)
+        self.plotter.render()
+
+    def reset_section_widget(self):
+        """Reset clipping to show full model"""
+        if self.section_enabled and self.actor:
+            # Restore original mapper
+            if hasattr(self, "original_mapper") and self.original_mapper:
+                self.actor.SetMapper(self.original_mapper)
+                self.plotter.render()
 
     # ========== Measurement ==========
     def toggle_measurement(self, checked):
@@ -228,7 +344,7 @@ class GCodeApp(QMainWindow):
                 callback=self.on_measure_pick,
                 left_clicking=True,
                 show_message=False,
-                use_picker=False,  # pick points on the mesh surface
+                use_picker=False,
             )
             self.btn_measure.setText("Измерение активно (щелкните 2 точки)")
         else:
@@ -307,7 +423,7 @@ class GCodeApp(QMainWindow):
         except ValueError:
             self.opacity_input.setText(str(self.opacity_slider.value()))
 
-    # ========== Existing methods ==========
+    # ========== File operations ==========
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open G-code")
         if path:
@@ -317,6 +433,10 @@ class GCodeApp(QMainWindow):
                 self.setWindowTitle(f"G-Code Viewer: [{n}] {path}")
                 self.plotter.reset_camera()
                 self.reset_measurement()
+                # Disable section if active
+                if self.section_enabled:
+                    self.disable_section_widget()
+                    self.btn_section.setChecked(False)
 
     def get_screenshot(self):
         options = QFileDialog.Options()
@@ -361,6 +481,9 @@ class GCodeApp(QMainWindow):
         self.tube_filter.Update()
         tube = pv.wrap(self.tube_filter.GetOutput())
 
+        # Store original mesh for clipping
+        self.original_mesh = tube
+
         self.actor = self.plotter.add_mesh(
             tube,
             name="3d_panel",
@@ -388,6 +511,8 @@ class GCodeApp(QMainWindow):
             self.tube_filter.SetRadius(value / 20)
             self.tube_filter.Update()
             self.actor.GetMapper().SetInputData(self.tube_filter.GetOutput())
+            # Update original mesh reference
+            self.original_mesh = pv.wrap(self.tube_filter.GetOutput())
             self.plotter.render()
 
     def update_slider_from_input(self):
