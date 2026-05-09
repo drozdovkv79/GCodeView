@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>G-Code Viewer 3D - Web версия</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* UI панель */
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: rgba(30, 30, 40, 0.95);
+            color: #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 100;
+            pointer-events: auto;
+            font-size: 13px;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        #ui-panel h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: #ff9800;
+        }
+        
+        .section {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .section-title {
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        
+        button {
+            background: #ff9800;
+            color: #1e1e28;
+            border: none;
+            padding: 6px 12px;
+            margin: 3px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: #ffb74d;
+            transform: scale(1.02);
+        }
+        
+        button:active {
+            transform: scale(0.98);
+        }
+        
+        button.secondary {
+            background: #555;
+            color: white;
+        }
+        
+        button.danger {
+            background: #d32f2f;
+        }
+        
+        button.danger:hover {
+            background: #f44336;
+        }
+        
+        .control-group {
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .control-group label {
+            width: 100px;
+            font-size: 12px;
+        }
+        
+        input[type="range"] {
+            flex: 1;
+            cursor: pointer;
+        }
+        
+        input[type="color"] {
+            width: 40px;
+            height: 30px;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .value-display {
+            width: 40px;
+            text-align: center;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 5px;
+        }
+        
+        .status {
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: monospace;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .measure-result {
+            color: #4caf50;
+            font-weight: bold;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .file-label {
+            background: #2196f3;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-block;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 3px;
+        }
+        
+        .file-label:hover {
+            background: #42a5f5;
+        }
+        
+        /* Информация о FPS */
+        #stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            z-index: 100;
+            pointer-events: none;
+        }
+        
+        .coords {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            z-index: 100;
+            pointer-events: none;
+        }
+        
+        /* Сворачивание панели */
+        .toggle-panel {
+            position: absolute;
+            top: 20px;
+            left: 340px;
+            background: rgba(30,30,40,0.9);
+            border: none;
+            padding: 5px 10px;
+            z-index: 101;
+            cursor: pointer;
+        }
+        
+        @media (max-width: 768px) {
+            #ui-panel { width: 260px; }
+            .toggle-panel { left: 280px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="ui-panel">
+        <h3>📊 G-Code Viewer 3D</h3>
+        
+        <div class="section">
+            <div class="section-title">📁 Файл</div>
+            <input type="file" id="file-input" class="file-input" accept=".gcode,.nc,.txt">
+            <label for="file-input" class="file-label">📂 Загрузить G-code</label>
+            <div id="file-status" class="status">Файл не загружен</div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">🎨 Внешний вид</div>
+            <div class="control-group">
+                <label>Толщина линии:</label>
+                <input type="range" id="thickness-slider" min="1" max="10" step="1" value="3">
+                <span id="thickness-value" class="value-display">3</span>
+            </div>
+            <div class="control-group">
+                <label>Цвет модели:</label>
+                <input type="color" id="color-picker" value="#f4a460">
+            </div>
+            <div class="control-group">
+                <label>Прозрачность:</label>
+                <input type="range" id="opacity-slider" min="0" max="100" step="1" value="100">
+                <span id="opacity-value" class="value-display">100%</span>
+            </div>
+            <div class="control-group">
+                <label>Цвет фона:</label>
+                <input type="color" id="bg-color" value="#30303a">
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">🎥 Камера</div>
+            <div class="button-group">
+                <button id="cam-front">Front</button>
+                <button id="cam-back">Back</button>
+                <button id="cam-left">Left</button>
+                <button id="cam-right">Right</button>
+                <button id="cam-top">Top</button>
+                <button id="cam-bottom">Bottom</button>
+                <button id="cam-iso">ISO</button>
+                <button id="cam-reset">Сброс</button>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">📏 Измерения</div>
+            <div class="button-group">
+                <button id="measure-btn" class="secondary">🔍 Измерить</button>
+                <button id="reset-measure-btn" class="secondary" disabled>✖ Сбросить</button>
+            </div>
+            <div id="measure-result" class="status measure-result">Расстояние: —</div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">✂ Сечение модели</div>
+            <div class="button-group">
+                <button id="show-plane-btn">1️⃣ Показать плоскость</button>
+                <button id="clip-right-btn" disabled>2️⃣ Рассечь справа</button>
+                <button id="clip-left-btn" disabled>3️⃣ Рассечь слева</button>
+                <button id="hide-plane-btn" disabled>4️⃣ Скрыть плоскость</button>
+                <button id="reset-section-btn" class="danger">5️⃣ Сбросить сечение</button>
+            </div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">📸 Скриншот</div>
+            <div class="button-group">
+                <button id="screenshot-btn">📷 Сохранить снимок</button>
+            </div>
+        </div>
+    </div>
+    
+    <button id="toggle-panel" class="toggle-panel">◀</button>
+    <div id="stats">⚡</div>
+    <div id="coords" class="coords">📌</div>
+    
+    <!-- Подключаем Three.js и расширения -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module" src="app.js"></script>
+</body>
+</html>
