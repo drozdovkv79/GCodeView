@@ -1,12 +1,3 @@
-"""
-Загрузка G-code файлов
-Настройка толщины линии, цвета и прозрачности
-Измерение расстояний между точками
-Сечение модели с помощью интерактивной плоскости
-Инвертирование сечения для показа правой или левой части
-Скриншоты и управление камерой
-"""
-
 import sys
 
 import numpy as np
@@ -16,7 +7,6 @@ from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -110,6 +100,8 @@ class GCodeApp(QMainWindow):
         self.plotter.render_window.SetMultiSamples(2)
         self.plotter.enable_terrain_style(mouse_wheel_zooms=1.035)
         self.plotter.camera_position = "iso"
+
+        # Настройка сетки
         self.plotter.show_grid(
             color=(80, 80, 90),
             grid="back",
@@ -119,9 +111,17 @@ class GCodeApp(QMainWindow):
             xtitle="X (мм)",
             ytitle="Y (мм)",
             ztitle="Z (мм)",
-            font_size=16,
-            minor_ticks=True,
+            font_size=14,
         )
+
+        # Настройка толщины линий сетки
+        try:
+            axes_actor = self.plotter.renderer.axes_actor
+            if axes_actor:
+                axes_actor.SetGridLineWidth(2)
+                axes_actor.SetAxisLinesWidth(2)
+        except:
+            pass
 
         self.plotter.show()
 
@@ -220,28 +220,37 @@ class GCodeApp(QMainWindow):
 
         panel.addWidget(QFrame(frameShape=QFrame.HLine))
 
-        # Section tools group
+        # Section tools group (НОВАЯ ЛОГИКА)
         section_group = QGroupBox("Сечение модели")
         section_layout = QVBoxLayout()
 
-        # Enable/disable section plane widget
-        self.section_enabled = False
-        self.btn_section = QPushButton("Включить сечение")
-        self.btn_section.setCheckable(True)
-        self.btn_section.clicked.connect(self.toggle_section_widget)
-        section_layout.addWidget(self.btn_section)
+        # Кнопка 1: Отобразить плоскость сечения
+        self.btn_show_plane = QPushButton("1. Отобразить плоскость сечения")
+        self.btn_show_plane.clicked.connect(self.show_section_plane)
+        section_layout.addWidget(self.btn_show_plane)
 
-        # Checkbox for inverting section
-        self.invert_checkbox = QCheckBox(
-            "Инвертировать сечение (показать правую часть)"
-        )
-        self.invert_checkbox.stateChanged.connect(self.toggle_invert_section)
-        section_layout.addWidget(self.invert_checkbox)
+        # Кнопка 2: Рассечь модель справа от сечения
+        self.btn_clip_right = QPushButton("2. Рассечь модель справа")
+        self.btn_clip_right.clicked.connect(lambda: self.apply_clipping("right"))
+        self.btn_clip_right.setEnabled(False)
+        section_layout.addWidget(self.btn_clip_right)
 
-        # Reset section button
-        btn_reset_section = QPushButton("Сбросить сечение")
-        btn_reset_section.clicked.connect(self.reset_section_widget)
-        section_layout.addWidget(btn_reset_section)
+        # Кнопка 3: Рассечь модель слева от сечения
+        self.btn_clip_left = QPushButton("3. Рассечь модель слева")
+        self.btn_clip_left.clicked.connect(lambda: self.apply_clipping("left"))
+        self.btn_clip_left.setEnabled(False)
+        section_layout.addWidget(self.btn_clip_left)
+
+        # Кнопка 4: Скрыть плоскость сечения
+        self.btn_hide_plane = QPushButton("4. Скрыть плоскость сечения")
+        self.btn_hide_plane.clicked.connect(self.hide_section_plane)
+        self.btn_hide_plane.setEnabled(False)
+        section_layout.addWidget(self.btn_hide_plane)
+
+        # Кнопка 5: Сбросить настройки сечения
+        self.btn_reset_section = QPushButton("5. Сбросить настройки сечения")
+        self.btn_reset_section.clicked.connect(self.reset_section)
+        section_layout.addWidget(self.btn_reset_section)
 
         section_group.setLayout(section_layout)
         panel.addWidget(section_group)
@@ -258,25 +267,26 @@ class GCodeApp(QMainWindow):
         self.mesh = None
         self.actor = None
         self.tube_filter = None
-        self.clip_plane_widget = None
+        self.section_plane_widget = None
         self.original_bounds = None
         self.original_mapper = None
         self.original_mesh = None
         self.clip_filter = None
+        self.section_active = False  # Плоскость отображена
+        self.is_clipped = False  # Модель рассечена
 
-    # ========== Section Widget ==========
-    def toggle_section_widget(self, checked):
-        if checked:
-            self.enable_section_widget()
-            self.btn_section.setText("Выключить сечение")
-        else:
-            self.disable_section_widget()
-            self.btn_section.setText("Включить сечение")
-
-    def enable_section_widget(self):
+    # ========== Section Widget (НОВАЯ ЛОГИКА) ==========
+    def show_section_plane(self):
+        """Отобразить плоскость сечения (без выполнения самого сечения)"""
         if not self.actor:
             print("Сначала загрузите модель")
-            self.btn_section.setChecked(False)
+            return
+
+        # Если плоскость уже существует, просто показываем её
+        if self.section_plane_widget:
+            self.section_plane_widget.On()
+            self.section_active = True
+            self.btn_hide_plane.setEnabled(True)
             return
 
         # Store original bounds if not already stored
@@ -287,116 +297,146 @@ class GCodeApp(QMainWindow):
         if self.original_mapper is None:
             self.original_mapper = self.actor.GetMapper()
 
-        # Create plane widget for clipping
+        # Store original mesh for clipping
+        if self.original_mesh is None:
+            self.original_mesh = self.actor.mapper.dataset
+
+        # Создаем плоскость для визуализации
         center = (
             (self.original_bounds[0] + self.original_bounds[1]) / 2,
             (self.original_bounds[2] + self.original_bounds[3]) / 2,
             (self.original_bounds[4] + self.original_bounds[5]) / 2,
         )
 
-        self.clip_plane_widget = self.plotter.add_plane_widget(
-            callback=self.update_clip_plane,
+        self.section_plane_widget = self.plotter.add_plane_widget(
+            callback=self.on_plane_moved,
             bounds=self.original_bounds,
-            color="red",
+            color="cyan",
             normal=(1, 0, 0),
             origin=center,
+            # opacity=0.5,
         )
-        self.section_enabled = True
 
-    def update_clip_plane(self, *args):
-        """Callback for plane widget"""
-        # Получаем plane_widget из аргументов
-        if len(args) == 1:
-            plane_widget = args[0]
-        elif len(args) == 2:
-            plane_widget = args[0]
-        else:
-            return
+        self.section_active = True
 
-        if not self.actor or not plane_widget:
-            return
+        # Включаем кнопки управления
+        self.btn_clip_right.setEnabled(True)
+        self.btn_clip_left.setEnabled(True)
+        self.btn_hide_plane.setEnabled(True)
 
-        # Проверяем тип объекта и получаем параметры плоскости
-        try:
-            # Пробуем получить origin и normal разными способами
-            if hasattr(plane_widget, "GetOrigin"):
+        print(
+            "Плоскость сечения отображена. Перемещайте её мышью, затем нажмите 'Рассечь модель'"
+        )
+
+    def on_plane_moved(self, plane_widget, event):
+        """Callback при перемещении плоскости (только сохраняем позицию)"""
+        if self.section_plane_widget:
+            # Просто сохраняем, что плоскость переместилась
+            # Если нужно, можно отображать координаты
+            try:
                 origin = plane_widget.GetOrigin()
                 normal = plane_widget.GetNormal()
-            elif isinstance(plane_widget, tuple):
-                # Если передан кортеж, берем первый элемент
-                widget = plane_widget[0]
+                # Можно добавить отображение координат в статусную строку
+                # print(f"Plane position: {origin}, normal: {normal}")
+            except:
+                pass
+
+    def apply_clipping(self, side="right"):
+        """Рассечь модель с указанной стороны от плоскости"""
+        if not self.section_plane_widget:
+            print("Сначала отобразите плоскость сечения (кнопка 1)")
+            return
+
+        if not self.actor:
+            return
+
+        # Получаем параметры плоскости
+        try:
+            if hasattr(self.section_plane_widget, "GetOrigin"):
+                origin = self.section_plane_widget.GetOrigin()
+                normal = self.section_plane_widget.GetNormal()
+            else:
+                widget = (
+                    self.section_plane_widget[0]
+                    if isinstance(self.section_plane_widget, tuple)
+                    else self.section_plane_widget
+                )
                 origin = widget.GetOrigin()
                 normal = widget.GetNormal()
-            else:
-                # Альтернативный способ получения параметров
-                origin = plane_widget.GetCenter()
-                normal = plane_widget.GetNormal()
         except Exception as e:
             print(f"Error getting plane parameters: {e}")
             return
 
-        # Create clipping plane
+        # Создаем плоскость для обрезки
         clip_plane = vtk.vtkPlane()
         clip_plane.SetOrigin(origin)
         clip_plane.SetNormal(normal)
 
-        # Apply clipping
+        # Применяем обрезку
         if self.clip_filter is None:
             self.clip_filter = vtk.vtkClipPolyData()
 
         self.clip_filter.SetInputData(self.original_mesh)
         self.clip_filter.SetClipFunction(clip_plane)
 
-        # SetInsideOut based on checkbox state
-        if self.invert_checkbox.isChecked():
-            self.clip_filter.SetInsideOut(True)  # Show right side
-        else:
-            self.clip_filter.SetInsideOut(False)  # Show left side
+        # SetInsideOut в зависимости от выбранной стороны
+        if side == "right":
+            self.clip_filter.SetInsideOut(True)  # Показываем правую сторону
+            print("Модель рассечена: показана правая часть")
+        else:  # 'left'
+            self.clip_filter.SetInsideOut(False)  # Показываем левую сторону
+            print("Модель рассечена: показана левая часть")
 
         self.clip_filter.Update()
 
-        # Create new mapper with clipped data
+        # Создаем новый mapper с обрезанными данными
         clipped_mapper = vtk.vtkPolyDataMapper()
         clipped_mapper.SetInputConnection(self.clip_filter.GetOutputPort())
         self.actor.SetMapper(clipped_mapper)
+
+        self.is_clipped = True
         self.plotter.render()
 
-    def disable_section_widget(self):
-        if self.clip_plane_widget:
-            try:
-                self.plotter.remove_actor(self.clip_plane_widget)
-            except:
-                pass
-            self.clip_plane_widget = None
+    def hide_section_plane(self):
+        """Скрыть плоскость сечения, но оставить модель рассеченной"""
+        if self.section_plane_widget:
+            self.section_plane_widget.Off()  # SetVisibility(False)
+            self.section_active = False
+            self.btn_hide_plane.setEnabled(False)
+            self.btn_show_plane.setEnabled(True)
+            print("Плоскость сечения скрыта")
 
-        # Restore original mapper
+    def reset_section(self):
+        """Полностью сбросить настройки сечения"""
+        # Восстанавливаем оригинальную модель
         if self.actor and self.original_mapper:
             self.actor.SetMapper(self.original_mapper)
+            self.is_clipped = False
 
-        self.section_enabled = False
+        # Удаляем плоскость сечения
+        if self.section_plane_widget:
+            try:
+                self.plotter.remove_actor(self.section_plane_widget)
+            except:
+                pass
+            self.section_plane_widget = None
+
+        # Сбрасываем состояние
+        self.section_active = False
+        self.is_clipped = False
+
+        # Обновляем состояние кнопок
+        self.btn_clip_right.setEnabled(False)
+        self.btn_clip_left.setEnabled(False)
+        self.btn_hide_plane.setEnabled(False)
+        self.btn_show_plane.setEnabled(True)
+
         self.plotter.render()
-
-    def reset_section_widget(self):
-        """Reset clipping to show full model"""
-        if self.section_enabled and self.actor:
-            # Restore original mapper
-            if self.original_mapper:
-                self.actor.SetMapper(self.original_mapper)
-                self.plotter.render()
-
-            # Reset checkbox
-            self.invert_checkbox.setChecked(False)
-
-    def toggle_invert_section(self, state):
-        """Toggle between showing left or right side of the cut"""
-        if self.clip_plane_widget:
-            # Update the section
-            self.update_clip_plane(self.clip_plane_widget, None)
+        print("Настройки сечения сброшены")
 
     # ========== Measurement ==========
     def toggle_measurement(self, checked):
         if checked:
-            # Disable any previous picking before enabling new one
             try:
                 self.plotter.disable_picking()
             except:
@@ -421,7 +461,6 @@ class GCodeApp(QMainWindow):
             return
 
         self.measure_points.append(point)
-        # visual feedback: mark point
         sphere = pv.Sphere(radius=2, center=point)
         actor = self.plotter.add_mesh(sphere, color="red", pickable=False)
         self.measure_actors.append(actor)
@@ -431,14 +470,12 @@ class GCodeApp(QMainWindow):
             dist = np.linalg.norm(np.array(p1) - np.array(p2))
             self.measure_label.setText(f"Расстояние: {dist:.2f} мм")
 
-            # draw line between points
             line = pv.Line(p1, p2)
             line_actor = self.plotter.add_mesh(
                 line, color="cyan", line_width=4, pickable=False
             )
             self.measure_actors.append(line_actor)
 
-            # add a label at midpoint
             mid = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2)
             text_actor = self.plotter.add_point_labels(
                 [mid],
@@ -452,19 +489,16 @@ class GCodeApp(QMainWindow):
             self.measure_actors.append(text_actor)
 
             self.btn_reset_measure.setEnabled(True)
-            # automatically exit measurement mode after two picks
             self.btn_measure.setChecked(False)
             self.toggle_measurement(False)
 
     def reset_measurement(self):
-        # remove all measurement graphics
         for actor in self.measure_actors:
             self.plotter.remove_actor(actor)
         self.measure_actors.clear()
         self.measure_points.clear()
         self.measure_label.setText("Расстояние: —")
         self.btn_reset_measure.setEnabled(False)
-        # if in measurement mode, turn it off
         if self.measuring_mode:
             self.btn_measure.setChecked(False)
             self.toggle_measurement(False)
@@ -495,24 +529,8 @@ class GCodeApp(QMainWindow):
                 self.setWindowTitle(f"G-Code Viewer: [{n}] {path}")
                 self.plotter.reset_camera()
                 self.reset_measurement()
-                # Disable section if active
-                if self.section_enabled:
-                    self.disable_section_widget()
-                    self.btn_section.setChecked(False)
-
-            # В методе load_file после загрузки модели:
-            if self.parser.parse(path):
-                # Смещаем модель, чтобы минимальные координаты были 0
-                min_x = self.parser.all_points[:, 0].min()
-                min_y = self.parser.all_points[:, 1].min()
-                min_z = self.parser.all_points[:, 2].min()
-
-                if min_x < 0 or min_y < 0 or min_z < 0:
-                    shift = np.array([-min_x, -min_y, -min_z])
-                    self.parser.all_points += shift
-                    print(f"Модель смещена на {shift} для начала координат с 0")
-
-                self.render_model()
+                # Сбрасываем сечение при загрузке нового файла
+                self.reset_section()
 
     def get_screenshot(self):
         options = QFileDialog.Options()
