@@ -4,13 +4,16 @@ import {
   CSS2DRenderer,
   CSS2DObject,
 } from "three/addons/renderers/CSS2DRenderer.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 
-// ========== Система логирования (без зависимостей от DOM) ==========
+// ========== Система логирования ==========
 const Logger = {
   logElement: null,
 
   init() {
-    // Ждем появления элемента
     this.logElement = document.getElementById("log-content");
     if (!this.logElement) {
       console.log("Ожидание создания log-content...");
@@ -20,7 +23,6 @@ const Logger = {
   },
 
   add(message, type = "info") {
-    // Если лог еще не инициализирован, просто выводим в консоль
     if (!this.logElement) {
       console.log(`[${type}] ${message}`);
       return;
@@ -61,10 +63,17 @@ const Logger = {
 
 // ========== Основные переменные ==========
 let scene, camera, renderer, labelRenderer, controls;
+let effectComposer = null;
 let mainGroup;
 let currentModel = null;
 let pointsCount = 0;
 let segmentsCount = 0;
+let totalFilament = 0;
+
+// Источники света (3 источника)
+let ambientLight;
+let light1, light2, light3;
+let lightSpheres = []; // Сферы для визуализации источников света
 
 // Состояние измерения
 let measuringMode = false;
@@ -73,7 +82,6 @@ let measureObjects = [];
 
 // Состояние сечения
 let sectionPlane = null;
-let sectionPlaneVisible = false;
 let isClipped = false;
 
 // UI элементы
@@ -81,40 +89,31 @@ let statsElement, coordsElement;
 let lastTime = performance.now();
 let frameCount = 0;
 
-// Настройки линий
-let lineWidth = 3;
-
 // ========== Инициализация ==========
 async function init() {
   try {
     console.log("Начало инициализации...");
 
-    // Ждем небольшой паузы для загрузки DOM
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Инициализируем логгер
     Logger.init();
     Logger.info("Инициализация 3D сцены...");
 
-    // Проверяем наличие всех элементов
     statsElement = document.getElementById("stats");
     coordsElement = document.getElementById("coords");
 
-    if (!statsElement) console.warn("stats element not found");
-    if (!coordsElement) console.warn("coords element not found");
-
     // Сцена
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x30303a);
+    scene.background = new THREE.Color(0x1a1a2e);
 
     // Камера
     camera = new THREE.PerspectiveCamera(
       45,
       window.innerWidth / window.innerHeight,
       0.1,
-      10000,
+      20000,
     );
-    camera.position.set(500, 400, 600);
+    camera.position.set(800, 600, 1000);
     camera.lookAt(0, 0, 0);
 
     // Рендерер
@@ -148,9 +147,13 @@ async function init() {
     scene.add(mainGroup);
 
     // Вспомогательные элементы
-    addLighting();
+    setupLights();
+    addLightSpheres();
     addGridHelper();
     addAxesHelper();
+
+    // Настройка эффектов
+    setupEffectComposer();
 
     // Запуск анимации
     animate();
@@ -158,15 +161,11 @@ async function init() {
     // Настройка UI после загрузки
     setupUI();
 
-    // Обработка resize
     window.addEventListener("resize", onWindowResize);
-
-    // Настройка измерения точек
     setupMeasurementClick();
 
     Logger.success("Приложение успешно инициализировано");
 
-    // Обновляем статус
     if (statsElement) {
       statsElement.innerHTML = "⚡ Готов к работе | Ожидание файла";
     }
@@ -176,105 +175,203 @@ async function init() {
   }
 }
 
-// ========== Освещение ==========
-// ========== Освещение с настраиваемой позицией ==========
-function addLighting() {
-  // 1. Ambient свет (базовая освещенность)
-  const ambientLight = new THREE.AmbientLight(0x666666, 0.6);
+// ========== Настройка Effect Composer для AA ==========
+function setupEffectComposer() {
+  effectComposer = new EffectComposer(renderer);
+  const renderPass = new RenderPass(scene, camera);
+  effectComposer.addPass(renderPass);
+}
+
+function setAntiAliasing(level) {
+  if (!effectComposer) return;
+
+  while (effectComposer.passes.length > 1) {
+    effectComposer.removePass(effectComposer.passes[1]);
+  }
+
+  if (level === "off") {
+    Logger.info("Anti-aliasing выключен");
+    return;
+  }
+
+  const fxaaPass = new ShaderPass(FXAAShader);
+  const pixelRatio = renderer.getPixelRatio();
+  fxaaPass.uniforms["resolution"].value.x =
+    1 / (window.innerWidth * pixelRatio);
+  fxaaPass.uniforms["resolution"].value.y =
+    1 / (window.innerHeight * pixelRatio);
+  effectComposer.addPass(fxaaPass);
+  fxaaPass.renderToScreen = true;
+
+  Logger.info(`Anti-aliasing включен: ${level}x`);
+}
+
+// ========== Добавление сфер для визуализации источников света ==========
+function addLightSpheres() {
+  // Удаляем старые сферы
+  lightSpheres.forEach((sphere) => scene.remove(sphere));
+  lightSpheres = [];
+
+  // Создаем сферы для каждого источника света
+  const sphereGeometry = new THREE.SphereGeometry(20, 16, 16);
+
+  // Сфера для света 1 (оранжевая)
+  const sphere1 = new THREE.Mesh(
+    sphereGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0xffaa66,
+      emissive: 0x442200,
+      emissiveIntensity: 0.5,
+    }),
+  );
+  scene.add(sphere1);
+  lightSpheres.push(sphere1);
+
+  // Сфера для света 2 (белая)
+  const sphere2 = new THREE.Mesh(
+    sphereGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0x222222,
+      emissiveIntensity: 0.3,
+    }),
+  );
+  scene.add(sphere2);
+  lightSpheres.push(sphere2);
+
+  // Сфера для света 3 (голубая)
+  const sphere3 = new THREE.Mesh(
+    sphereGeometry,
+    new THREE.MeshStandardMaterial({
+      color: 0x88aaff,
+      emissive: 0x002244,
+      emissiveIntensity: 0.4,
+    }),
+  );
+  scene.add(sphere3);
+  lightSpheres.push(sphere3);
+
+  // Обновляем позиции сфер
+  updateLightSpheresPositions();
+}
+
+function updateLightSpheresPositions() {
+  if (!light1) return;
+
+  const pos1 = light1.position;
+  const pos2 = light2.position;
+  const pos3 = light3.position;
+
+  if (lightSpheres[0]) lightSpheres[0].position.copy(pos1);
+  if (lightSpheres[1]) lightSpheres[1].position.copy(pos2);
+  if (lightSpheres[2]) lightSpheres[2].position.copy(pos3);
+}
+
+// ========== Настройка освещения ==========
+function setupLights() {
+  // Ambient свет
+  ambientLight = new THREE.AmbientLight(0x888888, 0.6);
   scene.add(ambientLight);
 
-  // 2. Основной свет - сверху на высоте 4000
-  const topLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  topLight.position.set(0, 4000, 100); // X:100, Y:4000 (высота), Z:0
-  topLight.castShadow = false;
-  scene.add(topLight);
+  // Свет 1: сверху 4000мм и справа 500мм (X=500, Y=4000, Z=0)
+  light1 = new THREE.DirectionalLight(0xffaa88, 0.7);
+  light1.position.set(500, 4000, 0);
+  scene.add(light1);
 
-  // 3. Боковой свет - сбоку на 1000 мм (например, справа и спереди)
-  const sideLight = new THREE.DirectionalLight(0xffaa88, 0.5);
-  sideLight.position.set(1000, 1500, 1000); // X:1000 (справа), Y:1500, Z:1000 (спереди)
-  sideLight.castShadow = false;
-  scene.add(sideLight);
+  // Свет 2: сверху 3000мм и по X и Z на 1000мм
+  light2 = new THREE.DirectionalLight(0xffffff, 0.6);
+  light2.position.set(1000, 3000, 1000);
+  scene.add(light2);
 
-  // Опционально: второй боковой свет слева для равномерности
-  const leftLight = new THREE.DirectionalLight(0x88aaff, 0.3);
-  leftLight.position.set(-1000, 1500, -500); // X:-1000 (слева), Y:500, Z:500
-  leftLight.castShadow = false;
-  scene.add(leftLight);
+  // Свет 3: сверху 3000мм и по X и Z на -1000мм
+  light3 = new THREE.DirectionalLight(0x88aaff, 0.5);
+  light3.position.set(-1000, 3000, -1000);
+  scene.add(light3);
+}
 
-  // Визуализация позиции источников света (для отладки, можно удалить)
-  if (true) {
-    // Установите false чтобы скрыть маркеры
-    const sphereGeo = new THREE.SphereGeometry(20, 8, 8);
+// ========== Обновление освещения ==========
+function updateLights() {
+  const ambientInt = parseFloat(
+    document.getElementById("ambient-intensity")?.value || 0.6,
+  );
 
-    const topMarker = new THREE.Mesh(
-      sphereGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0x442200 }),
-    );
-    topMarker.position.set(0, 4000, 100);
-    scene.add(topMarker);
+  // Свет 1
+  const light1Height = parseFloat(
+    document.getElementById("light1-height")?.value || 4000,
+  );
+  const light1X = parseFloat(document.getElementById("light1-x")?.value || 500);
+  const light1Int = parseFloat(
+    document.getElementById("light1-intensity")?.value || 0.7,
+  );
 
-    const sideMarker = new THREE.Mesh(
-      sphereGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffaa66, emissive: 0x442200 }),
-    );
-    sideMarker.position.set(1000, 500, 1000);
-    scene.add(sideMarker);
+  // Свет 2
+  const light2Height = parseFloat(
+    document.getElementById("light2-height")?.value || 3000,
+  );
+  const light2X = parseFloat(
+    document.getElementById("light2-x")?.value || 1000,
+  );
+  const light2Z = parseFloat(
+    document.getElementById("light2-z")?.value || 1000,
+  );
+  const light2Int = parseFloat(
+    document.getElementById("light2-intensity")?.value || 0.6,
+  );
 
-    const leftMarker = new THREE.Mesh(
-      sphereGeo,
-      new THREE.MeshStandardMaterial({ color: 0x66aaff, emissive: 0x002244 }),
-    );
-    leftMarker.position.set(-1000, 1500, -500);
-    scene.add(leftMarker);
+  // Свет 3
+  const light3Height = parseFloat(
+    document.getElementById("light3-height")?.value || 3000,
+  );
+  const light3X = parseFloat(
+    document.getElementById("light3-x")?.value || -1000,
+  );
+  const light3Z = parseFloat(
+    document.getElementById("light3-z")?.value || -1000,
+  );
+  const light3Int = parseFloat(
+    document.getElementById("light3-intensity")?.value || 0.5,
+  );
 
-    // Добавляем линии от источника света до центра сцены
-    const center = new THREE.Vector3(0, 0, 0);
-
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xffaa66 });
-
-    const topLineGeo = new THREE.BufferGeometry().setFromPoints([
-      topMarker.position,
-      center,
-    ]);
-    const topLine = new THREE.Line(topLineGeo, lineMat);
-    scene.add(topLine);
-
-    const sideLineGeo = new THREE.BufferGeometry().setFromPoints([
-      sideMarker.position,
-      center,
-    ]);
-    const sideLine = new THREE.Line(sideLineGeo, lineMat);
-    scene.add(sideLine);
-
-    const leftLineGeo = new THREE.BufferGeometry().setFromPoints([
-      leftMarker.position,
-      center,
-    ]);
-    const leftLine = new THREE.Line(leftLineGeo, lineMat);
-    scene.add(leftLine);
+  if (ambientLight) ambientLight.intensity = ambientInt;
+  if (light1) {
+    light1.position.set(light1X, light1Height, 0);
+    light1.intensity = light1Int;
   }
+  if (light2) {
+    light2.position.set(light2X, light2Height, light2Z);
+    light2.intensity = light2Int;
+  }
+  if (light3) {
+    light3.position.set(light3X, light3Height, light3Z);
+    light3.intensity = light3Int;
+  }
+
+  // Обновляем позиции сфер-визуализаторов
+  updateLightSpheresPositions();
+
+  Logger.info("Освещение обновлено");
 }
 
 // ========== Вспомогательные элементы ==========
 function addGridHelper() {
-  const gridHelper = new THREE.GridHelper(2000, 20, 0x888888, 0x444444);
+  const gridHelper = new THREE.GridHelper(3000, 30, 0x888888, 0x444444);
   gridHelper.position.y = -0.1;
   gridHelper.material.transparent = true;
-  gridHelper.material.opacity = 0.4;
+  gridHelper.material.opacity = 0.3;
   scene.add(gridHelper);
 }
 
 function addAxesHelper() {
-  const axesHelper = new THREE.AxesHelper(500);
+  const axesHelper = new THREE.AxesHelper(800);
   axesHelper.material.transparent = true;
-  axesHelper.material.opacity = 0.3;
+  axesHelper.material.opacity = 0.2;
   scene.add(axesHelper);
 
   const makeAxisLabel = (text, color, position) => {
     const div = document.createElement("div");
     div.textContent = text;
     div.style.color = color;
-    div.style.fontSize = "16px";
+    div.style.fontSize = "14px";
     div.style.fontWeight = "bold";
     div.style.textShadow = "1px 1px 0px black";
     const label = new CSS2DObject(div);
@@ -282,22 +379,23 @@ function addAxesHelper() {
     scene.add(label);
   };
 
-  makeAxisLabel("Y", "#ff4444", new THREE.Vector3(600, 0, 0));
-  makeAxisLabel("Z", "#44ff44", new THREE.Vector3(0, 3100, 0));
-  makeAxisLabel("X", "#4444ff", new THREE.Vector3(0, 0, 30));
+  makeAxisLabel("X", "#ff8888", new THREE.Vector3(850, 0, 0));
+  makeAxisLabel("Y", "#88ff88", new THREE.Vector3(0, 850, 0));
+  makeAxisLabel("Z", "#8888ff", new THREE.Vector3(0, 0, 850));
 }
 
-// ========== Создание толстой линии с помощью TubeGeometry ==========
-function createThickLine(points, color, radius) {
+// ========== Создание толстой линии с матовым материалом ==========
+// Диаметр трубки напрямую соответствует значению ползунка (1-10 мм)
+function createThickLine(points, color, diameter) {
   if (points.length < 2) return null;
 
   try {
-    // Создаем кривую из точек
     const curve = new THREE.CatmullRomCurve3(points);
-
-    // Минимальное количество сегментов для производительности
     const tubularSegments = Math.max(20, Math.floor(points.length * 1.2));
-    const radialSegments = 8; // 6-гранник для скорости
+    const radialSegments = 12; // Больше сегментов для гладкости при большом диаметре
+
+    // Радиус = половина диаметра
+    const radius = diameter / 2;
 
     const geometry = new THREE.TubeGeometry(
       curve,
@@ -307,34 +405,15 @@ function createThickLine(points, color, radius) {
       false,
     );
 
-    //const material = new THREE.MeshStandardMaterial({
-    //  color: color,
-    //  roughness: 0.5,
-    //  metalness: 0.3,
-    //});
-
-    // Самый матовый вариант - MeshStandardMaterial с параметрами:
-    // const material = new THREE.MeshStandardMaterial({
-    //   color: color,
-    //   roughness: 1.0, // Максимальная шероховатость
-    //   metalness: 0.0, // Ноль металличности
-    //   emissive: 0x000000,
-    //   emissiveIntensity: 0,
-    //   flatShading: true,
-    //   side: THREE.DoubleSide,
-    // });
-
-    const material = new THREE.MeshLambertMaterial({
+    // Матовый материал - керамика/цемент
+    const material = new THREE.MeshStandardMaterial({
       color: color,
-      flatShading: true,
+      roughness: 0.92,
+      metalness: 0.02,
+      emissive: 0x222222,
+      emissiveIntensity: 0.05,
+      flatShading: false,
     });
-
-    //const material = new THREE.MeshPhongMaterial({
-    //  color: color,
-    //  shininess: 10, // Низкий блеск (0-100, чем меньше, тем матовее)
-    //  specular: 0x111111, // Темный цвет бликов
-    //  flatShading: true,
-    //});
 
     const tube = new THREE.Mesh(geometry, material);
     tube.castShadow = false;
@@ -348,34 +427,30 @@ function createThickLine(points, color, radius) {
 }
 
 // ========== Создание модели из сегментов ==========
-function createModelFromSegments(segments, color, radius) {
+function createModelFromSegments1(segments, color, diameter) {
   const group = new THREE.Group();
   let tubeCount = 0;
 
   for (const segment of segments) {
     if (segment.length < 2) continue;
 
-    // Конвертируем точки в Vector3 (меняем Y и Z для удобства)
     const points = segment.map((p) => new THREE.Vector3(p.x, p.z, p.y));
-
-    // Для длинных сегментов разбиваем на части
-    const maxPointsPerTube = 1000;
+    const maxPointsPerTube = 200;
 
     if (points.length <= maxPointsPerTube) {
-      const tube = createThickLine(points, color, radius);
+      const tube = createThickLine(points, color, diameter);
       if (tube) {
         group.add(tube);
         tubeCount++;
       }
     } else {
-      // Разбиваем на части
       for (let i = 0; i < points.length - 1; i += maxPointsPerTube - 1) {
         const chunk = points.slice(
           i,
           Math.min(i + maxPointsPerTube, points.length),
         );
         if (chunk.length >= 2) {
-          const tube = createThickLine(chunk, color, radius);
+          const tube = createThickLine(chunk, color, diameter);
           if (tube) {
             group.add(tube);
             tubeCount++;
@@ -385,7 +460,64 @@ function createModelFromSegments(segments, color, radius) {
     }
   }
 
-  Logger.info(`Создано трубок: ${tubeCount}`);
+  Logger.info(`Создано трубок: ${tubeCount}, диаметр: ${diameter} мм`);
+  return group;
+}
+
+// ========== Создание модели из сегментов (непрерывная труба) ==========
+function createModelFromSegments(segments, color, diameter) {
+  const group = new THREE.Group();
+
+  // Собираем ВСЕ точки в один непрерывный массив
+  const allPoints = [];
+
+  for (const segment of segments) {
+    if (segment.length === 0) continue;
+
+    // Добавляем точки сегмента
+    for (const pt of segment) {
+      allPoints.push(new THREE.Vector3(pt.x, pt.z, pt.y));
+    }
+  }
+
+  if (allPoints.length < 2) {
+    Logger.warning("Недостаточно точек для создания модели");
+    return group;
+  }
+
+  Logger.info(`Создание непрерывной трубы из ${allPoints.length} точек...`);
+
+  // Создаем ОДНУ непрерывную кривую через все точки
+  const curve = new THREE.CatmullRomCurve3(allPoints);
+
+  // Параметры трубки
+  const tubularSegments = Math.max(100, Math.floor(allPoints.length));
+  const radialSegments = 12;
+  const radius = diameter / 2;
+
+  const geometry = new THREE.TubeGeometry(
+    curve,
+    tubularSegments,
+    radius,
+    radialSegments,
+    false,
+  );
+
+  // Матовый материал
+  const material = new THREE.MeshStandardMaterial({
+    color: color,
+    roughness: 0.92,
+    metalness: 0.02,
+    emissive: 0x222222,
+    emissiveIntensity: 0.05,
+  });
+
+  const tube = new THREE.Mesh(geometry, material);
+  tube.castShadow = false;
+  tube.receiveShadow = false;
+  group.add(tube);
+
+  Logger.info(`Создана непрерывная труба, диаметр: ${diameter} мм`);
   return group;
 }
 
@@ -394,11 +526,13 @@ class GCodeParser {
   constructor() {
     this.points = [];
     this.segments = [];
+    this.totalE = 0;
   }
 
   parse(content) {
     this.points = [];
     this.segments = [];
+    this.totalE = 0;
 
     const lines = content.split("\n");
     let currentPos = { x: 0, y: 0, z: 0 };
@@ -431,11 +565,20 @@ class GCodeParser {
         } else if (part.startsWith("Z")) {
           newPos.z = parseFloat(part.substring(1));
           hasMove = true;
+        } else if (part.startsWith("E")) {
+          const e = parseFloat(part.substring(1));
+          if (e > 0) this.totalE += e;
         }
       }
 
       if (isG1 && hasMove) {
-        currentPath.push(newPos);
+        if (
+          currentPath[currentPath.length - 1].x !== newPos.x ||
+          currentPath[currentPath.length - 1].y !== newPos.y ||
+          currentPath[currentPath.length - 1].z !== newPos.z
+        ) {
+          currentPath.push(newPos);
+        }
         currentPos = newPos;
       } else if (hasMove) {
         if (currentPath.length > 1) {
@@ -459,6 +602,7 @@ class GCodeParser {
     Logger.info(
       `Парсинг завершен. Сегментов: ${this.segments.length}, точек: ${this.points.length}`,
     );
+    Logger.info(`Общий расход филамента: ${this.totalE.toFixed(2)} мм`);
     return this.segments.length > 0;
   }
 
@@ -516,17 +660,44 @@ async function loadGCode(file) {
 
       const bounds = parser.getBounds();
       const segments = parser.segments;
+      totalFilament = parser.totalE;
 
-      // Центрирование модели
+      // Размеры модели
+      const sizeX = (bounds.max.x - bounds.min.x).toFixed(1);
+      const sizeY = (bounds.max.y - bounds.min.y).toFixed(1);
+      const sizeZ = (bounds.max.z - bounds.min.z).toFixed(1);
+
+      const dimElement = document.getElementById("model-dimensions");
+      const statsInfoElement = document.getElementById("model-stats");
+
+      if (dimElement) {
+        dimElement.innerHTML = `
+                    <span>📏 Длина (X):</span> ${sizeX} мм<br>
+                    <span>📐 Ширина (Y):</span> ${sizeY} мм<br>
+                    <span>📏 Высота (Z):</span> ${sizeZ} мм
+                `;
+        Logger.info(`Размеры модели: X=${sizeX}, Y=${sizeY}, Z=${sizeZ}`);
+      }
+      if (statsInfoElement) {
+        statsInfoElement.innerHTML = `
+                    <span>🔘 Точек:</span> ${parser.points.length.toLocaleString()}<br>
+                    <span>🧵 Филамента:</span> ${totalFilament.toFixed(2)} мм
+                `;
+        Logger.info(
+          `Статистика: точек=${parser.points.length}, филамента=${totalFilament.toFixed(2)} мм`,
+        );
+      }
+
+      // НОВОЕ: центрирование по X и Y, Z привязан к 0
       const centerX = (bounds.min.x + bounds.max.x) / 2;
-      //const centerZ = (bounds.min.z + bounds.max.z) / 2;
       const centerY = (bounds.min.y + bounds.max.y) / 2;
+      const minZ = bounds.min.z; // Находим самую нижнюю точку по Z
 
       for (const seg of segments) {
         for (const pt of seg) {
           pt.x -= centerX;
           pt.y -= centerY;
-          //pt.z -= centerZ;
+          pt.z -= minZ; // Смещаем так, чтобы нижняя точка стала Z=0
         }
       }
 
@@ -534,19 +705,19 @@ async function loadGCode(file) {
         mainGroup.remove(currentModel);
       }
 
-      const color = document.getElementById("color-picker")?.value || "#f4a460";
-      const radius =
-        parseFloat(document.getElementById("thickness-slider")?.value || "5") *
-        0.5;
+      const color = document.getElementById("color-picker")?.value || "#c4a882";
+      const diameter = parseFloat(
+        document.getElementById("thickness-slider")?.value || "3",
+      );
 
       statusDiv.innerHTML = "⏳ Создание 3D модели...";
-      Logger.info(`Создание модели (диаметр: ${radius.toFixed(2)})...`);
+      Logger.info(`Создание модели (диаметр: ${diameter} мм)...`);
 
-      currentModel = createModelFromSegments(segments, color, radius);
+      currentModel = createModelFromSegments(segments, color, diameter);
       currentModel.userData = {
         bounds: bounds,
         segments: segments,
-        radius: radius, // Сохраняем текущий радиус
+        diameter: diameter,
       };
 
       mainGroup.add(currentModel);
@@ -567,7 +738,7 @@ async function loadGCode(file) {
         bounds.max.y - bounds.min.y,
         bounds.max.z - bounds.min.z,
       );
-      const distance = maxDim * 1.5;
+      const distance = Math.max(maxDim * 1.5, 500);
       camera.position.set(distance * 0.8, distance * 0.6, distance);
       controls.target.set(0, 0, 0);
       controls.update();
@@ -591,24 +762,18 @@ async function loadGCode(file) {
 function updateModelAppearance() {
   if (!currentModel) return;
 
-  const color = document.getElementById("color-picker")?.value || "#f4a460";
-  const newRadius =
-    parseFloat(document.getElementById("thickness-slider")?.value || "6") * 0.5;
+  const color = document.getElementById("color-picker")?.value || "#c4a882";
+  const newDiameter = parseFloat(
+    document.getElementById("thickness-slider")?.value || "3",
+  );
   const opacity =
     parseInt(document.getElementById("opacity-slider")?.value || "100") / 100;
 
-  // Получаем текущий радиус
-  const currentRadius = currentModel.userData?.radius || newRadius;
+  const currentDiameter = currentModel.userData?.diameter || newDiameter;
 
-  // Проверяем, изменился ли радиус
-  if (Math.abs(currentRadius - newRadius) > 0.001) {
-    // Радиус изменился - пересоздаем модель
-    Logger.info(
-      `Изменение диаметра: ${currentRadius.toFixed(1)} → ${newRadius.toFixed(1)}`,
-    );
-    regenerateModel(newRadius, color, opacity);
+  if (Math.abs(currentDiameter - newDiameter) > 0.1) {
+    regenerateModel(newDiameter, color, opacity);
   } else {
-    // Только меняем цвет и прозрачность
     currentModel.children.forEach((child) => {
       if (child.isMesh) {
         child.material.color.set(color);
@@ -619,8 +784,7 @@ function updateModelAppearance() {
   }
 }
 
-// ========== Пересоздание модели с новым радиусом ==========
-function regenerateModel(radius, color, opacity) {
+function regenerateModel(diameter, color, opacity) {
   if (
     !currentModel ||
     !currentModel.userData ||
@@ -631,26 +795,22 @@ function regenerateModel(radius, color, opacity) {
   }
 
   const segments = currentModel.userData.segments;
-
-  // Показываем индикатор загрузки
   const statusDiv = document.getElementById("file-status");
   const originalText = statusDiv?.innerHTML;
+
   if (statusDiv) {
-    statusDiv.innerHTML = "⏳ Обновление толщины линий...";
+    statusDiv.innerHTML = "⏳ Обновление диаметра трубок...";
     statusDiv.style.color = "#ff9800";
   }
 
-  // Используем setTimeout чтобы не блокировать UI
   setTimeout(() => {
     try {
-      // Создаем новую модель
-      const newModel = createModelFromSegments(segments, color, radius);
+      const newModel = createModelFromSegments(segments, color, diameter);
       newModel.userData = {
         ...currentModel.userData,
-        radius: radius,
+        diameter: diameter,
       };
 
-      // Применяем прозрачность
       newModel.children.forEach((child) => {
         if (child.isMesh) {
           child.material.opacity = opacity;
@@ -658,34 +818,74 @@ function regenerateModel(radius, color, opacity) {
         }
       });
 
-      // Заменяем модель
       mainGroup.remove(currentModel);
       currentModel = newModel;
       mainGroup.add(currentModel);
 
-      // Если было активное сечение, применяем его заново
       if (isClipped && sectionPlane) {
-        applyClipping("right");
+        // applyClipping('right');
       }
 
-      Logger.success(`Модель обновлена: диаметр ${radius.toFixed(1)}`);
+      Logger.success(`Модель обновлена: диаметр ${diameter} мм`);
 
       if (statusDiv) {
         statusDiv.innerHTML = originalText || "Готово";
         statusDiv.style.color = "#4caf50";
-        setTimeout(() => {
-          if (statusDiv.innerHTML === "Готово") {
-            statusDiv.innerHTML = `✅ Загружено: ${pointsCount.toLocaleString()} точек, ${segmentsCount} сегментов`;
-          }
-        }, 1000);
       }
     } catch (err) {
       Logger.error(`Ошибка обновления модели: ${err.message}`);
-      if (statusDiv) {
-        statusDiv.innerHTML = originalText || "Готово";
-      }
     }
   }, 10);
+}
+
+// ========== Обновление отображения значений слайдеров ==========
+function updateSliderValues() {
+  // Ambient
+  const ambient = document.getElementById("ambient-intensity");
+  if (ambient)
+    document.getElementById("ambient-value").textContent = parseFloat(
+      ambient.value,
+    ).toFixed(2);
+
+  // Свет 1
+  const l1h = document.getElementById("light1-height");
+  if (l1h)
+    document.getElementById("light1-height-value").textContent = l1h.value;
+  const l1x = document.getElementById("light1-x");
+  if (l1x) document.getElementById("light1-x-value").textContent = l1x.value;
+  const l1i = document.getElementById("light1-intensity");
+  if (l1i)
+    document.getElementById("light1-int-value").textContent = parseFloat(
+      l1i.value,
+    ).toFixed(2);
+
+  // Свет 2
+  const l2h = document.getElementById("light2-height");
+  if (l2h)
+    document.getElementById("light2-height-value").textContent = l2h.value;
+  const l2x = document.getElementById("light2-x");
+  if (l2x) document.getElementById("light2-x-value").textContent = l2x.value;
+  const l2z = document.getElementById("light2-z");
+  if (l2z) document.getElementById("light2-z-value").textContent = l2z.value;
+  const l2i = document.getElementById("light2-intensity");
+  if (l2i)
+    document.getElementById("light2-int-value").textContent = parseFloat(
+      l2i.value,
+    ).toFixed(2);
+
+  // Свет 3
+  const l3h = document.getElementById("light3-height");
+  if (l3h)
+    document.getElementById("light3-height-value").textContent = l3h.value;
+  const l3x = document.getElementById("light3-x");
+  if (l3x) document.getElementById("light3-x-value").textContent = l3x.value;
+  const l3z = document.getElementById("light3-z");
+  if (l3z) document.getElementById("light3-z-value").textContent = l3z.value;
+  const l3i = document.getElementById("light3-intensity");
+  if (l3i)
+    document.getElementById("light3-int-value").textContent = parseFloat(
+      l3i.value,
+    ).toFixed(2);
 }
 
 // ========== Настройка UI ==========
@@ -700,14 +900,14 @@ function setupUI() {
     });
   }
 
-  // Ползунки
+  // Внешний вид
   const thicknessSlider = document.getElementById("thickness-slider");
   if (thicknessSlider) {
     thicknessSlider.addEventListener("input", (e) => {
       const val = parseFloat(e.target.value);
       const display = document.getElementById("thickness-value");
       if (display) display.textContent = val.toFixed(1);
-      updateModelAppearance(); // Эта функция теперь будет пересоздавать модель при изменении радиуса
+      updateModelAppearance();
     });
   }
 
@@ -732,16 +932,62 @@ function setupUI() {
     });
   }
 
+  // Anti-aliasing
+  document
+    .getElementById("aa-off")
+    ?.addEventListener("click", () => setAntiAliasing("off"));
+  document
+    .getElementById("aa-2")
+    ?.addEventListener("click", () => setAntiAliasing("2x"));
+  document
+    .getElementById("aa-4")
+    ?.addEventListener("click", () => setAntiAliasing("4x"));
+  document
+    .getElementById("aa-8")
+    ?.addEventListener("click", () => setAntiAliasing("8x"));
+
+  // Освещение - обновление значений при движении
+  const lightSliders = [
+    "ambient-intensity",
+    "light1-height",
+    "light1-x",
+    "light1-intensity",
+    "light2-height",
+    "light2-x",
+    "light2-z",
+    "light2-intensity",
+    "light3-height",
+    "light3-x",
+    "light3-z",
+    "light3-intensity",
+  ];
+
+  lightSliders.forEach((id) => {
+    const slider = document.getElementById(id);
+    if (slider) {
+      slider.addEventListener("input", () => updateSliderValues());
+    }
+  });
+
+  // Кнопка применить освещение
+  const applyLightsBtn = document.getElementById("apply-lights-btn");
+  if (applyLightsBtn) {
+    applyLightsBtn.addEventListener("click", () => {
+      updateLights();
+      Logger.success("Настройки освещения применены");
+    });
+  }
+
   // Камера
   const cameraPositions = {
-    "cam-front": [0, 0, -3000],
-    "cam-back": [0, 0, 600],
-    "cam-left": [-600, 0, 0],
-    "cam-right": [600, 0, 0],
-    "cam-top": [0, 600, 0],
-    "cam-bottom": [0, -600, 0],
-    "cam-iso": [500, 400, 600],
-    "cam-reset": [500, 400, 600],
+    "cam-front": [0, 0, 1200],
+    "cam-back": [0, 0, -1200],
+    "cam-left": [-1200, 0, 0],
+    "cam-right": [1200, 0, 0],
+    "cam-top": [0, 1200, 0],
+    "cam-bottom": [0, -1200, 0],
+    "cam-iso": [800, 600, 1000],
+    "cam-reset": [800, 600, 1000],
   };
 
   for (const [id, pos] of Object.entries(cameraPositions)) {
@@ -753,14 +999,6 @@ function setupUI() {
         controls.update();
       });
     }
-  }
-
-  // Сечение (упрощенно)
-  const showPlaneBtn = document.getElementById("show-plane-btn");
-  if (showPlaneBtn) {
-    showPlaneBtn.addEventListener("click", () => {
-      Logger.info("Функция сечения будет добавлена позже");
-    });
   }
 
   // Скриншот
@@ -790,14 +1028,28 @@ function setupUI() {
   if (toggleBtn && panel) {
     toggleBtn.addEventListener("click", () => {
       panelVisible = !panelVisible;
-      panel.style.display = panelVisible ? "block" : "none";
+      panel.classList.toggle("hidden", !panelVisible);
       toggleBtn.textContent = panelVisible ? "◀" : "▶";
-      toggleBtn.style.left = panelVisible ? "340px" : "20px";
+      toggleBtn.style.left = panelVisible ? "320px" : "20px";
     });
   }
+
+  // Сворачивание лога
+  let logVisible = true;
+  const logPanel = document.getElementById("log-panel");
+  const logHeader = document.getElementById("log-header");
+  if (logHeader && logPanel) {
+    logHeader.addEventListener("click", () => {
+      logVisible = !logVisible;
+      logPanel.classList.toggle("hidden", !logVisible);
+    });
+  }
+
+  // Инициализация отображения значений
+  updateSliderValues();
 }
 
-// ========== Настройка кликов для измерения ==========
+// ========== Настройка измерений ==========
 function setupMeasurementClick() {
   const measureBtn = document.getElementById("measure-btn");
   const resetMeasureBtn = document.getElementById("reset-measure-btn");
@@ -831,7 +1083,6 @@ function setupMeasurementClick() {
     });
   }
 
-  // Обработка кликов для измерения
   renderer.domElement.addEventListener("click", (event) => {
     if (!measuringMode || !currentModel) return;
 
@@ -847,7 +1098,6 @@ function setupMeasurementClick() {
     if (intersects.length > 0) {
       const point = intersects[0].point;
 
-      // Добавляем сферу в точку
       const geometry = new THREE.SphereGeometry(5, 8, 8);
       const material = new THREE.MeshStandardMaterial({ color: 0xff4444 });
       const sphere = new THREE.Mesh(geometry, material);
@@ -863,7 +1113,6 @@ function setupMeasurementClick() {
           `📏 Расстояние: ${dist.toFixed(2)} мм`;
         Logger.info(`Расстояние: ${dist.toFixed(2)} мм`);
 
-        // Линия между точками
         const points = [measurePoints[0], measurePoints[1]];
         const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
         const lineMat = new THREE.LineBasicMaterial({ color: 0x44ff44 });
@@ -883,7 +1132,11 @@ function animate() {
   requestAnimationFrame(animate);
   controls.update();
 
-  renderer.render(scene, camera);
+  if (effectComposer && effectComposer.passes.length > 1) {
+    effectComposer.render();
+  } else {
+    renderer.render(scene, camera);
+  }
   labelRenderer.render(scene, camera);
 
   frameCount++;
@@ -903,9 +1156,12 @@ function onWindowResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   labelRenderer.setSize(window.innerWidth, window.innerHeight);
+  if (effectComposer) {
+    effectComposer.setSize(window.innerWidth, window.innerHeight);
+  }
 }
 
-// Запуск после полной загрузки страницы
+// Запуск
 window.addEventListener("load", () => {
   console.log("Страница полностью загружена, запуск приложения...");
   init();
