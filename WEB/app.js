@@ -9,6 +9,103 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 
+// ========== Создание текстуры шума для камня/бетона ==========
+function createNoiseTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext("2d");
+
+  // Заполняем шумом
+  const imageData = ctx.createImageData(canvas.width, canvas.height);
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    const value = Math.floor(Math.random() * 100 + 80); // Серый цвет 80-180
+    imageData.data[i] = value; // R
+    imageData.data[i + 1] = value; // G
+    imageData.data[i + 2] = value; // B
+    imageData.data[i + 3] = 255; // A
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  // Добавляем пятна для реалистичности
+  for (let i = 0; i < 500; i++) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const radius = Math.random() * 5 + 1;
+    const dark = Math.floor(Math.random() * 60 + 40);
+
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${dark}, ${dark}, ${dark})`;
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(4, 4); // Повторяем текстуру для большей детализации
+  texture.needsUpdate = true;
+
+  return texture;
+}
+
+let stoneTexture = null;
+
+// Более продвинутая текстура камня (замените createNoiseTexture на эту)
+function createStoneTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 1024;
+  const ctx = canvas.getContext("2d");
+
+  // Базовый цвет
+  ctx.fillStyle = "#9e9e9e";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Добавляем гранулярность
+  for (let i = 0; i < 10000; i++) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const size = Math.random() * 3 + 0.5;
+    const brightness = Math.floor(Math.random() * 80 + 60);
+
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${brightness}, ${brightness}, ${brightness})`;
+    ctx.fill();
+  }
+
+  // Добавляем темные прожилки
+  for (let i = 0; i < 200; i++) {
+    const startX = Math.random() * canvas.width;
+    const startY = Math.random() * canvas.height;
+
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+
+    let x = startX;
+    let y = startY;
+
+    for (let j = 0; j < 20; j++) {
+      x += (Math.random() - 0.5) * 15;
+      y += (Math.random() - 0.5) * 15;
+      ctx.lineTo(x, y);
+    }
+
+    ctx.strokeStyle = `rgb(60, 60, 60)`;
+    ctx.lineWidth = Math.random() * 3 + 0.5;
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(8, 8);
+  texture.needsUpdate = true;
+
+  return texture;
+}
+
 // ========== Система логирования ==========
 const Logger = {
   logElement: null,
@@ -173,6 +270,171 @@ async function init() {
     console.error("Ошибка инициализации:", err);
     Logger.error(`Ошибка инициализации: ${err.message}`);
   }
+}
+
+// ========== Управление материалами ==========
+let currentMaterialType = "standard"; // По умолчанию Standard
+
+function applyMaterialToModel(materialType) {
+  if (!currentModel) {
+    Logger.warning("Модель не загружена");
+    return;
+  }
+
+  const color = document.getElementById("color-picker")?.value || "#c4a882";
+  const opacity =
+    parseInt(document.getElementById("opacity-slider")?.value || "100") / 100;
+
+  let material;
+
+  switch (materialType) {
+    case "basic":
+      // MeshBasicMaterial - не реагирует на свет, самый быстрый
+      material = new THREE.MeshBasicMaterial({
+        color: color,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Basic (не реагирует на свет)");
+      break;
+
+    case "lambert":
+      // MeshLambertMaterial - только диффузный, без бликов
+      material = new THREE.MeshLambertMaterial({
+        color: color,
+        emissive: 0x000000,
+        flatShading: true,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Lambert (матовый, без бликов)");
+      break;
+
+    case "phong":
+      // MeshPhongMaterial - с бликами, можно регулировать блеск
+      material = new THREE.MeshPhongMaterial({
+        color: color,
+        shininess: 10,
+        specular: 0x222222,
+        emissive: 0x000000,
+        flatShading: true,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Phong (матовый с небольшими бликами)");
+      break;
+
+    case "standard":
+      // MeshStandardMaterial - физически корректный
+      material = new THREE.MeshStandardMaterial({
+        color: color,
+        roughness: 0.92,
+        metalness: 0.02,
+        emissive: 0x222222,
+        emissiveIntensity: 0.05,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Standard (физически корректный)");
+      break;
+
+    case "physical":
+      // MeshPhysicalMaterial - расширенный Standard с прозрачностью
+      material = new THREE.MeshPhysicalMaterial({
+        color: color,
+        roughness: 0.85,
+        metalness: 0.01,
+        clearcoat: 0.1,
+        clearcoatRoughness: 0.5,
+        reflectivity: 0.1,
+        emissive: 0x111111,
+        emissiveIntensity: 0.03,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Physical (с расширенными настройками)");
+      break;
+
+    case "toon":
+      // MeshToonMaterial - мультяшный/стилизованный
+      material = new THREE.MeshToonMaterial({
+        color: color,
+        shininess: 5,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Toon (стилизованный)");
+      break;
+
+    case "normal":
+      // MeshNormalMaterial - разноцветный радужный
+      material = new THREE.MeshNormalMaterial({
+        flatShading: true,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Normal (радужные цвета)");
+      break;
+
+    case "emissive":
+      // MeshStandardMaterial с эмиссией - самосветящийся
+      material = new THREE.MeshStandardMaterial({
+        color: color,
+        roughness: 0.9,
+        metalness: 0.05,
+        emissive: 0xff6600,
+        emissiveIntensity: 0.25,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Emissive (самосвечение)");
+      break;
+
+    case "stone":
+      // Создаем текстуру если еще не создана
+      if (!stoneTexture) {
+        stoneTexture = createNoiseTexture();
+      }
+
+      material = new THREE.MeshStandardMaterial({
+        color: 0xaaaaaa, // Базовый серый цвет
+        roughness: 0.95, // Максимальная шероховатость
+        metalness: 0.02, // Неметаллический
+        map: stoneTexture, // Текстура шума
+        bumpScale: 0.3, // Глубина рельефа
+        emissive: 0x111111,
+        emissiveIntensity: 0.02,
+        transparent: opacity < 1,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+      });
+      Logger.info("Применен материал: Stone (шероховатый камень/бетон)");
+      break;
+
+    default:
+      material = new THREE.MeshStandardMaterial({
+        color: color,
+        roughness: 0.92,
+        metalness: 0.02,
+      });
+  }
+
+  // Применяем материал ко всем частям модели
+  currentModel.children.forEach((child) => {
+    if (child.isMesh) {
+      child.material = material;
+    }
+  });
+
+  currentMaterialType = materialType;
 }
 
 // ========== Настройка Effect Composer для AA ==========
@@ -492,7 +754,7 @@ function createModelFromSegments(segments, color, diameter) {
 
   // Параметры трубки
   const tubularSegments = Math.max(100, Math.floor(allPoints.length));
-  const radialSegments = 12;
+  const radialSegments = 6;
   const radius = diameter / 2;
 
   const geometry = new THREE.TubeGeometry(
@@ -759,7 +1021,7 @@ async function loadGCode(file) {
 }
 
 // ========== Обновление внешнего вида ==========
-function updateModelAppearance() {
+function updateModelAppearance1() {
   if (!currentModel) return;
 
   const color = document.getElementById("color-picker")?.value || "#c4a882";
@@ -779,6 +1041,33 @@ function updateModelAppearance() {
         child.material.color.set(color);
         child.material.opacity = opacity;
         child.material.transparent = opacity < 1;
+      }
+    });
+  }
+}
+
+// Обновленная функция updateModelAppearance (учитывает выбранный материал)
+function updateModelAppearance() {
+  if (!currentModel) return;
+
+  const color = document.getElementById("color-picker")?.value || "#c4a882";
+  const newDiameter = parseFloat(
+    document.getElementById("thickness-slider")?.value || "3",
+  );
+  const opacity =
+    parseInt(document.getElementById("opacity-slider")?.value || "100") / 100;
+
+  const currentDiameter = currentModel.userData?.diameter || newDiameter;
+
+  if (Math.abs(currentDiameter - newDiameter) > 0.1) {
+    regenerateModel(newDiameter, color, opacity);
+  } else {
+    // Обновляем цвет и прозрачность для текущего материала
+    currentModel.children.forEach((child) => {
+      if (child.isMesh) {
+        child.material.color.set(color);
+        child.material.transparent = opacity < 1;
+        child.material.opacity = opacity;
       }
     });
   }
@@ -824,6 +1113,11 @@ function regenerateModel(diameter, color, opacity) {
 
       if (isClipped && sectionPlane) {
         // applyClipping('right');
+      }
+
+      // После создания новой модели, применяем текущий материал
+      if (currentMaterialType) {
+        applyMaterialToModel(currentMaterialType);
       }
 
       Logger.success(`Модель обновлена: диаметр ${diameter} мм`);
@@ -931,6 +1225,28 @@ function setupUI() {
       scene.background = new THREE.Color(e.target.value);
     });
   }
+
+  // Настройка кнопок материалов
+  const materialButtons = [
+    //    { id: "mat-basic", type: "basic" },
+    { id: "mat-lambert", type: "lambert" },
+    { id: "mat-phong", type: "phong" },
+    { id: "mat-standard", type: "standard" },
+    { id: "mat-physical", type: "physical" },
+    { id: "mat-normal", type: "normal" },
+    { id: "mat-emissive", type: "emissive" },
+    //    { id: "mat-toon", type: "toon" },
+    { id: "mat-stone", type: "stone" },
+  ];
+
+  materialButtons.forEach((btn) => {
+    const element = document.getElementById(btn.id);
+    if (element) {
+      element.addEventListener("click", () => {
+        applyMaterialToModel(btn.type);
+      });
+    }
+  });
 
   // Anti-aliasing
   document
