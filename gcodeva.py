@@ -12,7 +12,6 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pyvista as pv
 import vtk
@@ -21,6 +20,7 @@ from PyQt6.QtGui import QColor, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QColorDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
@@ -58,29 +58,29 @@ class GCodeAnalyzer:
 
     def parse_file_from_lines(self, lines, progress_callback=None):
         """Парсинг GCode из списка строк с прогрессом по проценту"""
-        self.points = []
-        self.layers = defaultdict(list)
-        self.extrusion_points = []
-        self.travel_points = []
+        # Используем списки Python только на время парсинга
+        points_list = []
+        extrusion_list = []
+        travel_list = []
+        layers_dict = defaultdict(list)
+
         self.current_layer = 0
 
-        x, y, z = 0.0, 0.0, 0.0
-        e = 0.0
-        last_z = 0.0
+        x, y, z = np.float32(0.0), np.float32(0.0), np.float32(0.0)
+        e = np.float32(0.0)
+        last_z = np.float32(0.0)
         point_index = 0
-        layer_threshold = 1.0
+        layer_threshold = np.float32(1.0)
 
         total_lines = len(lines)
-        last_progress_pct = 20  # начальный процент (после 20% идёт парсинг)
+        last_progress_pct = 20
 
         for line_num, line in enumerate(lines):
             line = line.strip()
 
-            # Пропускаем комментарии и пустые строки
             if not line or line.startswith(";"):
                 continue
 
-            # Установка режима экструдера
             if "M82" in line:
                 self.absolute_extruder = True
                 continue
@@ -88,7 +88,6 @@ class GCodeAnalyzer:
                 self.absolute_extruder = False
                 continue
 
-            # Обработка G0 и G1 команд
             if line.startswith(("G0 ", "G1 ", "G0\t", "G1\t")):
                 x_match = re.search(r"X([-\d.]+)", line)
                 y_match = re.search(r"Y([-\d.]+)", line)
@@ -97,51 +96,78 @@ class GCodeAnalyzer:
                 f_match = re.search(r"F([-\d.]+)", line)
 
                 if x_match:
-                    x = float(x_match.group(1))
+                    x = np.float32(x_match.group(1))
                 if y_match:
-                    y = float(y_match.group(1))
+                    y = np.float32(y_match.group(1))
                 if z_match:
-                    z = float(z_match.group(1))
+                    z = np.float32(z_match.group(1))
                     if abs(z - last_z) > layer_threshold:
                         self.current_layer += 1
                         last_z = z
                 if e_match:
-                    e = float(e_match.group(1))
+                    e = np.float32(e_match.group(1))
                 if f_match:
-                    self.feed_rate = float(f_match.group(1))
+                    self.feed_rate = np.float32(f_match.group(1))
 
                 is_g1 = line.startswith(("G1 ", "G1\t"))
                 has_extrusion = e_match is not None and is_g1 and e > 0
 
-                point = {
-                    "x": x,
-                    "y": y,
-                    "z": z,
-                    "e": e,
-                    "feed_rate": self.feed_rate,
-                    "layer": self.current_layer,
-                    "is_extrusion": is_g1 and has_extrusion,
-                    "index": point_index,
-                }
+                # Храним как numpy массив для экономии памяти
+                point = np.array(
+                    [
+                        x,
+                        y,
+                        z,
+                        e,
+                        self.feed_rate,
+                        self.current_layer,
+                        is_g1 and has_extrusion,
+                        point_index,
+                    ],
+                    dtype=np.float32,
+                )
 
-                self.points.append(point)
-                if point["is_extrusion"]:
-                    self.extrusion_points.append(point)
+                points_list.append(point)
+
+                if has_extrusion:
+                    extrusion_list.append(point)
                 else:
-                    self.travel_points.append(point)
-                self.layers[self.current_layer].append(point)
+                    travel_list.append(point)
+
+                layers_dict[self.current_layer].append(point)
                 point_index += 1
 
-            # Обновление прогресса: передаём процент (20..70) только при изменении
+            # Обновление прогресса
             if progress_callback and total_lines > 0:
                 current_pct = 20 + int(50 * (line_num + 1) / total_lines)
                 if current_pct != last_progress_pct:
                     progress_callback(current_pct)
                     last_progress_pct = current_pct
 
-        # Финальное обновление до 70%
         if progress_callback:
             progress_callback(70)
+
+        # Конвертируем в numpy массивы float32
+        self.points = (
+            np.array(points_list, dtype=np.float32)
+            if points_list
+            else np.empty((0, 8), dtype=np.float32)
+        )
+        self.extrusion_points = (
+            np.array(extrusion_list, dtype=np.float32)
+            if extrusion_list
+            else np.empty((0, 8), dtype=np.float32)
+        )
+        self.travel_points = (
+            np.array(travel_list, dtype=np.float32)
+            if travel_list
+            else np.empty((0, 8), dtype=np.float32)
+        )
+
+        # Конвертируем слои
+        self.layers = {}
+        for layer_num, layer_points in layers_dict.items():
+            self.layers[layer_num] = np.array(layer_points, dtype=np.float32)
 
         return self.points
 
@@ -229,147 +255,144 @@ class GCodeAnalyzer:
         return self.points
 
     def get_statistics(self):
-        """Получение статистики по файлу (оптимизированная версия)"""
-        if not self.points:
+        """Получение статистики по файлу (оптимизированная для float32)"""
+        if len(self.points) == 0:
             return None
 
         stats = {}
         ext_pts = self.extrusion_points
 
-        # Количество точек
         stats["total_points"] = len(self.points)
         stats["extrusion_points"] = len(ext_pts)
         stats["travel_points"] = len(self.travel_points)
 
-        if not ext_pts:
+        if len(ext_pts) == 0:
             return stats
 
-        # Координаты только точек экструзии
-        xs = np.array([p["x"] for p in ext_pts])
-        ys = np.array([p["y"] for p in ext_pts])
-        zs = np.array([p["z"] for p in ext_pts])
+        # Извлекаем координаты как float32
+        xs = ext_pts[:, 0].astype(np.float32)
+        ys = ext_pts[:, 1].astype(np.float32)
+        zs = ext_pts[:, 2].astype(np.float32)
 
         # Размеры модели
-        stats["width"] = xs.max() - xs.min()
-        stats["length"] = ys.max() - ys.min()
-        stats["height"] = zs.max() - zs.min()
+        stats["width"] = float(xs.max() - xs.min())
+        stats["length"] = float(ys.max() - ys.min())
+        stats["height"] = float(zs.max() - zs.min())
 
-        # Расстояния между точками (без сортировки — по порядку следования)
+        # Расстояния между точками
         if len(xs) > 1:
             x_diffs = np.abs(np.diff(xs))
             x_diffs = x_diffs[x_diffs > 0]
             if len(x_diffs) > 0:
-                stats["min_distance_x"] = x_diffs.min()
-                stats["max_distance_x"] = x_diffs.max()
+                stats["min_distance_x"] = float(x_diffs.min())
+                stats["max_distance_x"] = float(x_diffs.max())
             else:
-                stats["min_distance_x"] = 0
-                stats["max_distance_x"] = 0
+                stats["min_distance_x"] = stats["max_distance_x"] = 0.0
 
             y_diffs = np.abs(np.diff(ys))
             y_diffs = y_diffs[y_diffs > 0]
             if len(y_diffs) > 0:
-                stats["min_distance_y"] = y_diffs.min()
-                stats["max_distance_y"] = y_diffs.max()
+                stats["min_distance_y"] = float(y_diffs.min())
+                stats["max_distance_y"] = float(y_diffs.max())
             else:
-                stats["min_distance_y"] = 0
-                stats["max_distance_y"] = 0
+                stats["min_distance_y"] = stats["max_distance_y"] = 0.0
 
             z_diffs = np.abs(np.diff(zs))
             z_diffs = z_diffs[z_diffs > 0]
             if len(z_diffs) > 0:
-                stats["min_distance_z"] = z_diffs.min()
-                stats["max_distance_z"] = z_diffs.max()
+                stats["min_distance_z"] = float(z_diffs.min())
+                stats["max_distance_z"] = float(z_diffs.max())
             else:
-                stats["min_distance_z"] = 0
-                stats["max_distance_z"] = 0
+                stats["min_distance_z"] = stats["max_distance_z"] = 0.0
         else:
-            stats["min_distance_x"] = stats["max_distance_x"] = 0
-            stats["min_distance_y"] = stats["max_distance_y"] = 0
-            stats["min_distance_z"] = stats["max_distance_z"] = 0
+            stats["min_distance_x"] = stats["max_distance_x"] = 0.0
+            stats["min_distance_y"] = stats["max_distance_y"] = 0.0
+            stats["min_distance_z"] = stats["max_distance_z"] = 0.0
 
-        # Количество слоёв (по уже определённым слоям)
+        # Количество слоёв
         layers_with_extrusion = [
-            l for l in self.layers if any(p["is_extrusion"] for p in self.layers[l])
+            l for l in self.layers if np.any(self.layers[l][:, 6] > 0)
         ]
         stats["num_layers"] = len(layers_with_extrusion)
 
         # Точки на слое
         points_per_layer = [
-            sum(1 for p in self.layers[l] if p["is_extrusion"])
-            for l in layers_with_extrusion
+            np.sum(self.layers[l][:, 6] > 0) for l in layers_with_extrusion
         ]
         if points_per_layer:
-            stats["min_points_per_layer"] = min(points_per_layer)
-            stats["max_points_per_layer"] = max(points_per_layer)
-            stats["avg_points_per_layer"] = np.mean(points_per_layer)
+            stats["min_points_per_layer"] = int(min(points_per_layer))
+            stats["max_points_per_layer"] = int(max(points_per_layer))
+            stats["avg_points_per_layer"] = float(np.mean(points_per_layer))
         else:
             stats["min_points_per_layer"] = stats["max_points_per_layer"] = stats[
                 "avg_points_per_layer"
             ] = 0
 
-        # Количество материала (всего)
-        e_values = np.array([p["e"] for p in ext_pts if p["e"] > 0])
-        total_e = e_values.sum() if len(e_values) > 0 else 0
+        # Количество материала
+        e_values = ext_pts[ext_pts[:, 3] > 0][:, 3].astype(np.float32)
+        total_e = float(e_values.sum()) if len(e_values) > 0 else 0.0
         stats["total_material"] = total_e
 
         # Материал по слоям
         material_per_layer = []
         for l in layers_with_extrusion:
-            l_e = sum(
-                p["e"] for p in self.layers[l] if p["e"] > 0 and p["is_extrusion"]
+            l_e = float(
+                np.sum(
+                    self.layers[l][
+                        (self.layers[l][:, 6] > 0) & (self.layers[l][:, 3] > 0)
+                    ][:, 3]
+                )
             )
             material_per_layer.append(l_e)
+
         if material_per_layer:
-            stats["min_material_per_layer"] = min(material_per_layer)
-            stats["max_material_per_layer"] = max(material_per_layer)
-            stats["avg_material_per_layer"] = np.mean(material_per_layer)
+            stats["min_material_per_layer"] = float(min(material_per_layer))
+            stats["max_material_per_layer"] = float(max(material_per_layer))
+            stats["avg_material_per_layer"] = float(np.mean(material_per_layer))
         else:
             stats["min_material_per_layer"] = stats["max_material_per_layer"] = stats[
                 "avg_material_per_layer"
-            ] = 0
+            ] = 0.0
 
         # Материал на точку
         if len(e_values) > 0:
-            stats["min_material_per_point"] = e_values.min()
-            stats["max_material_per_point"] = e_values.max()
+            stats["min_material_per_point"] = float(e_values.min())
+            stats["max_material_per_point"] = float(e_values.max())
         else:
-            stats["min_material_per_point"] = stats["max_material_per_point"] = 0
+            stats["min_material_per_point"] = stats["max_material_per_point"] = 0.0
 
-        # Объём (приблизительно)
-        filament_diameter = 1.75
+        # Объём
+        filament_diameter = np.float32(1.75)
         filament_area = np.pi * (filament_diameter / 2) ** 2
-        stats["volume"] = total_e * filament_area
+        stats["volume"] = float(total_e * filament_area)
 
-        # Экстремумы — быстрая версия без полного поиска углов
+        # Экстремумы
         stats["extremes"] = self._find_extremes_fast(xs, ys, zs, ext_pts)
 
         return stats
 
     def _find_extremes_fast(self, xs, ys, zs, ext_pts):
-        """Быстрый поиск экстремумов без вычисления углов"""
+        """Быстрый поиск экстремумов с float32"""
         extremes = {}
         if len(ext_pts) == 0:
             return extremes
 
-        # Максимальная высота
         max_z_idx = np.argmax(zs)
-        extremes["max_z"] = ext_pts[max_z_idx]
+        extremes["max_z"] = {
+            "x": float(ext_pts[max_z_idx, 0]),
+            "y": float(ext_pts[max_z_idx, 1]),
+            "z": float(ext_pts[max_z_idx, 2]),
+        }
 
-        # Максимальная скорость
-        speeds = np.array([p["feed_rate"] for p in ext_pts])
+        speeds = ext_pts[:, 4].astype(np.float32)
         max_speed_idx = np.argmax(speeds)
-        extremes["max_speed"] = ext_pts[max_speed_idx]
+        extremes["max_speed"] = {"feed_rate": float(ext_pts[max_speed_idx, 4])}
 
-        # Максимальная экструзия
-        e_vals = np.array([p["e"] for p in ext_pts])
+        e_vals = ext_pts[:, 3].astype(np.float32)
         max_e_idx = np.argmax(e_vals)
-        extremes["max_extrusion"] = ext_pts[max_e_idx]
+        extremes["max_extrusion"] = {"e": float(ext_pts[max_e_idx, 3])}
 
-        # Количество острых углов считаем выборочно (каждый 100-й слой или каждый 1000-ю точку)
-        # Это можно вообще убрать для скорости
-        extremes["num_sharp_corners"] = (
-            0  # или быстрый подсчёт через разности векторов без цикла
-        )
+        extremes["num_sharp_corners"] = 0
 
         return extremes
 
@@ -462,6 +485,7 @@ class VisualizationWorker(QThread):
     """Поток для создания визуализации"""
 
     progress = pyqtSignal(int)
+    message = pyqtSignal(str)  # Новый сигнал для сообщений в лог
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -471,51 +495,136 @@ class VisualizationWorker(QThread):
         self.color_scheme = color_scheme
         self.tube_diameter = tube_diameter
 
+    def uniform_sampling(self, points, max_points=1000):
+        """Оставляет не более max_points точек с равномерным шагом"""
+        if len(points) <= max_points:
+            return points
+
+        step = len(points) // max_points
+        filtered_points = points[::step]
+
+        # Всегда добавляем последнюю точку
+        # if filtered_points[-1] != points[-1]:
+        #    filtered_points = np.vstack([filtered_points, points[-1]])
+
+        return filtered_points
+
+    def remove_collinear_points(self, points, angle_threshold_deg=175):
+        """
+        Удаление коллинеарных точек по углу между векторами
+        angle_threshold_deg: порог угла в градусах (175 = почти прямая линия)
+        """
+        # Конвертируем в numpy массив
+        points = np.asarray(points, dtype=np.float32)
+
+        if len(points) <= 2:
+            return points
+
+        # Нормализуем размерность до 3D
+        if points.shape[1] == 2:
+            points = np.column_stack([points, np.zeros(len(points))])
+        elif points.shape[1] == 1:
+            points = np.column_stack([points, np.zeros((len(points), 2))])
+
+        # Начинаем с первой точки
+        filtered = [points[0]]
+
+        for i in range(1, len(points) - 1):
+            # Получаем три последовательные точки
+            p_prev = filtered[-1]  # Последняя сохраненная точка
+            p_curr = points[i]  # Текущая точка
+            p_next = points[i + 1]  # Следующая точка
+
+            # Векторы
+            v1 = p_curr - p_prev
+            v2 = p_next - p_curr
+
+            # Нормы векторов
+            norm1 = np.linalg.norm(v1)
+            norm2 = np.linalg.norm(v2)
+
+            if norm1 < 1e-10 or norm2 < 1e-10:
+                # Точки совпадают, пропускаем текущую
+                continue
+
+            # Нормализуем
+            v1 = v1 / norm1
+            v2 = v2 / norm2
+
+            # Вычисляем угол между векторами
+            dot = np.clip(np.dot(v1, v2), -1, 1)
+            angle = np.degrees(np.arccos(dot))
+
+            # Если угол меньше порога (не коллинеарны), сохраняем точку
+            if angle > angle_threshold_deg:
+                filtered.append(p_curr)
+
+        # Добавляем последнюю точку
+        filtered.append(points[-1])
+
+        return np.array(filtered, dtype=np.float32)
+
     def run(self):
         try:
+            import vtk
+
             self.progress.emit(10)
 
-            if not self.extrusion_points:
+            if len(self.extrusion_points) == 0:
                 self.error.emit("Нет точек для визуализации")
                 return
 
             # Группировка точек по слоям
             layers = defaultdict(list)
             for point in self.extrusion_points:
-                layers[point["layer"]].append(point)
+                layer_num = int(point[5])  # Индекс слоя в структуре
+                layers[layer_num].append(point)
 
             self.progress.emit(30)
 
             all_meshes = []
-            tube_radius = self.tube_diameter / 2.0
+            tube_radius = self.tube_diameter / np.float32(2.0)
 
             total_layers = len(layers)
             for idx, (layer_num, layer_points) in enumerate(sorted(layers.items())):
                 if len(layer_points) < 2:
                     continue
 
-                # Извлекаем координаты точек слоя
+                max_points = int(len(layer_points) / 2)
+                # Использование
+                layer_points1 = self.remove_collinear_points(
+                    layer_points, angle_threshold_deg=5
+                )
+
+                # layer_points1 = self.uniform_sampling(
+                #    layer_points, max_points=max_points
+                # )
+                self.message.emit(
+                    f"Слой {layer_num}: точек {len(layer_points1)} ,было {max_points * 2}"
+                )
+
+                # Конвертируем в numpy массив координат float32
                 points_array = np.array(
-                    [[p["x"], p["y"], p["z"]] for p in layer_points]
+                    [[p[0], p[1], p[2]] for p in layer_points1], dtype=np.float32
                 )
 
                 # Создаем PolyData для слоя
                 spl = pv.PolyData(points_array)
                 n_pts = len(points_array)
 
-                # Создаем непрерывную линию через все точки слоя
-                lines = np.hstack([[n_pts], np.arange(n_pts)])
+                # Создаем непрерывную линию
+                lines = np.hstack([[n_pts], np.arange(n_pts)]).astype(np.int32)
                 spl.lines = lines
 
-                # Используем vtkTubeFilter для создания непрерывной трубы
+                # vtkTubeFilter для непрерывной трубы
                 tube_filter = vtk.vtkTubeFilter()
                 tube_filter.SetInputData(spl)
-                tube_filter.SetRadius(tube_radius)
+                tube_filter.SetRadius(float(tube_radius))
                 tube_filter.SetNumberOfSides(8)
-                tube_filter.SetCapping(1)  # Закрываем концы трубы
+                tube_filter.SetCapping(1)
                 tube_filter.Update()
 
-                tube = pv.wrap(tube_filter.GetOutput())
+                tube = tube_filter.GetOutput()
                 all_meshes.append(tube)
 
                 progress = 30 + int(60 * (idx + 1) / total_layers)
@@ -527,14 +636,14 @@ class VisualizationWorker(QThread):
                 self.error.emit("Не удалось создать визуализацию")
                 return
 
-            # Создаем аппендер
+            # Быстрое объединение через vtkAppendPolyData
             append_filter = vtk.vtkAppendPolyData()
-            # Добавляем все сетки
             for mesh in all_meshes:
                 append_filter.AddInputData(mesh)
-            # Выполняем объединение
             append_filter.Update()
+
             combined = pv.wrap(append_filter.GetOutput())
+
             self.progress.emit(100)
             self.finished.emit(combined)
 
@@ -564,7 +673,7 @@ class MainWindow(QMainWindow):
 
         # Цветовые схемы
         self.color_schemes = {
-            "Матовый": "#E8E0D0",
+            "Матовый": "#e9e5ce",  # e9e5ce
             "Пластик": "#4A90E2",
             "Гипс": "#FFFFFF",
             "Сталь": "#808080",
@@ -666,6 +775,53 @@ class MainWindow(QMainWindow):
 
         actions_group.setLayout(actions_layout)
         layout.addWidget(actions_group)
+
+        # Кнопки видов
+        views_group = QGroupBox("Виды")
+        views_layout = QVBoxLayout()
+
+        # Ортогональные виды
+        ortho_views = [
+            ("Верх", self.view_top),
+            ("Низ", self.view_bottom),
+            ("Перед", self.view_front),
+            ("Зад", self.view_back),
+            ("Лево", self.view_left),
+            ("Право", self.view_right),
+        ]
+
+        for view_name, handler in ortho_views:
+            btn = QPushButton(view_name)
+            btn.clicked.connect(handler)
+            btn.setEnabled(False)
+            views_layout.addWidget(btn)
+            if not hasattr(self, "view_buttons"):
+                self.view_buttons = []
+            self.view_buttons.append(btn)
+
+        # Разделитель
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        views_layout.addWidget(separator)
+
+        # Изометрические виды
+        iso_views = [
+            ("ISO 1", lambda: self.view_iso(0)),
+            ("ISO 2", lambda: self.view_iso(1)),
+            ("ISO 3", lambda: self.view_iso(2)),
+            ("ISO 4", lambda: self.view_iso(3)),
+        ]
+
+        for view_name, handler in iso_views:
+            btn = QPushButton(view_name)
+            btn.clicked.connect(handler)
+            btn.setEnabled(False)
+            views_layout.addWidget(btn)
+            self.view_buttons.append(btn)
+
+        views_group.setLayout(views_layout)
+        layout.addWidget(views_group)
 
         # Кнопки экспорта
         export_group = QGroupBox("Экспорт")
@@ -770,6 +926,35 @@ class MainWindow(QMainWindow):
         viz_group = QGroupBox("Параметры визуализации")
         viz_layout = QVBoxLayout()
 
+        # Группа выбора цвета модели
+        model_color_group = QGroupBox("Цвет модели")
+        model_color_layout = QVBoxLayout()
+
+        # Кнопка выбора цвета
+        self.btn_choose_color = QPushButton("Выбрать цвет модели")
+        self.btn_choose_color.clicked.connect(self.choose_model_color)
+        model_color_layout.addWidget(self.btn_choose_color)
+
+        # Превью выбранного цвета
+        self.color_preview = QLabel()
+        self.color_preview.setFixedSize(60, 30)
+        self.color_preview.setStyleSheet(
+            "background-color: #e9e5ce; border: 1px solid #999;"
+        )
+        model_color_layout.addWidget(self.color_preview)
+
+        # Текущий цвет в тексте
+        self.color_value_label = QLabel("#e9e5ce")
+        model_color_layout.addWidget(self.color_value_label)
+
+        # Кнопка сброса на цвет по умолчанию
+        self.btn_reset_color = QPushButton("Сбросить цвет")
+        self.btn_reset_color.clicked.connect(self.reset_model_color)
+        model_color_layout.addWidget(self.btn_reset_color)
+
+        model_color_group.setLayout(model_color_layout)
+        layout.addWidget(model_color_group)
+
         # Диаметр трубы
         tube_layout = QHBoxLayout()
         tube_label = QLabel("Диаметр трубы (мм):")
@@ -862,7 +1047,12 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Анализ завершен")
 
         # Сохранение точек экструзии для визуализации
-        self.extrusion_points = [p for p in points if p["is_extrusion"]]
+        # Теперь points - это numpy массив, где колонка 6 содержит признак экструзии
+        if len(points) > 0:
+            # Фильтруем точки с экструзией (колонка 6 > 0)
+            self.extrusion_points = points[points[:, 6] > 0]
+        else:
+            self.extrusion_points = np.empty((0, 8), dtype=np.float32)
 
         # Отображение статистики
         self.display_statistics(stats)
@@ -943,10 +1133,9 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if not self.extrusion_points:
+        if len(self.extrusion_points) == 0:
             # Сначала анализируем
             self.analyze_gcode()
-            # Ждем завершения анализа (в реальном приложении нужно использовать сигналы)
             QMessageBox.information(
                 self,
                 "Информация",
@@ -968,6 +1157,7 @@ class MainWindow(QMainWindow):
         )
         self.viz_worker.progress.connect(self.progress_bar.setValue)
         self.viz_worker.finished.connect(self.on_visualization_finished)
+        self.viz_worker.message.connect(self.log_message)  # Подключаем сообщения в лог
         self.viz_worker.error.connect(self.on_visualization_error)
         self.viz_worker.start()
 
@@ -988,9 +1178,13 @@ class MainWindow(QMainWindow):
         self.btn_export.setEnabled(True)
         self.btn_update_viz.setEnabled(True)
 
+        # Активация кнопок видов
+        for btn in self.view_buttons:
+            btn.setEnabled(True)
+
     def update_visualization(self):
         """Обновление визуализации с новыми параметрами"""
-        if not self.extrusion_points:
+        if len(self.extrusion_points) == 0:
             QMessageBox.warning(
                 self, "Предупреждение", "Сначала загрузите и проанализируйте файл"
             )
@@ -1012,6 +1206,7 @@ class MainWindow(QMainWindow):
         )
         self.viz_worker.progress.connect(self.progress_bar.setValue)
         self.viz_worker.finished.connect(self.on_visualization_finished)
+        self.viz_worker.message.connect(self.log_message)  # Подключаем сообщения в лог
         self.viz_worker.error.connect(self.on_visualization_error)
         self.viz_worker.start()
 
@@ -1284,7 +1479,7 @@ class MainWindow(QMainWindow):
 
         materials = {
             "Матовый": {
-                "color": "#E8E0D0",
+                "color": "#e9e5ce",
                 "specular": 0.05,
                 "specular_power": 5,
                 "diffuse": 0.9,
@@ -1338,27 +1533,151 @@ class MainWindow(QMainWindow):
         s = materials.get(material_name, materials["Матовый"])
         prop = self.model_actor.GetProperty()
 
-        # Цвет
-        from PyQt6.QtGui import QColor
+        # Если пользователь выбрал кастомный цвет, используем его
+        if (
+            hasattr(self, "color_value_label")
+            and self.color_value_label.text() != s["color"]
+        ):
+            qc = QColor(self.color_value_label.text())
+        else:
+            qc = QColor(s["color"])
 
-        qc = QColor(s["color"])
         prop.SetColor(qc.redF(), qc.greenF(), qc.blueF())
-
-        # Основные свойства материала
         prop.SetSpecular(s["specular"])
         prop.SetSpecularPower(s["specular_power"])
         prop.SetDiffuse(s["diffuse"])
         prop.SetAmbient(s["ambient"])
         prop.SetOpacity(s["opacity"])
 
-        # PBR свойства (если поддерживаются)
         if hasattr(prop, "SetRoughness"):
             prop.SetRoughness(s["roughness"])
         if hasattr(prop, "SetMetallic"):
             prop.SetMetallic(s["metallic"])
 
-        # Мгновенное обновление
         self.plotter.render()
+
+    def view_top(self):
+        """Вид сверху"""
+        if self.plotter:
+            self.plotter.view_xy()
+            self.plotter.camera.Zoom(0.9)  # Масштабирование на 90%
+            self.plotter.render()
+
+    def view_bottom(self):
+        """Вид снизу"""
+        if self.plotter:
+            self.plotter.view_xy(negative=True)
+            self.plotter.camera.Zoom(0.9)
+            self.plotter.render()
+
+    def view_front(self):
+        """Вид спереди"""
+        if self.plotter:
+            self.plotter.view_yz()
+            self.plotter.camera.Zoom(0.9)
+            self.plotter.render()
+
+    def view_back(self):
+        """Вид сзади"""
+        if self.plotter:
+            self.plotter.view_yz(negative=True)
+            self.plotter.camera.Zoom(0.9)
+            self.plotter.render()
+
+    def view_left(self):
+        """Вид слева"""
+        if self.plotter:
+            self.plotter.view_xz(negative=True)
+            self.plotter.camera.Zoom(0.9)
+            self.plotter.render()
+
+    def view_right(self):
+        """Вид справа"""
+        if self.plotter:
+            self.plotter.view_xz()
+            self.plotter.camera.Zoom(0.9)
+            self.plotter.render()
+
+    def view_iso(self, position):
+        """Изометрический вид"""
+        if self.plotter:
+            # 4 разных изометрических позиции
+            iso_positions = [
+                [(1, 1, 1), (0, 0, 0), (0, 0, 1)],  # ISO 1
+                [(-1, 1, 1), (0, 0, 0), (0, 0, 1)],  # ISO 2
+                [(-1, -1, 1), (0, 0, 0), (0, 0, 1)],  # ISO 3
+                [(1, -1, 1), (0, 0, 0), (0, 0, 1)],  # ISO 4
+            ]
+
+            self.plotter.camera_position = iso_positions[position]
+            self.plotter.reset_camera()  # Сначала сбросить камеру
+            self.plotter.camera.Zoom(0.9)  # Затем масштабировать
+            self.plotter.render()
+
+    def choose_model_color(self):
+        """Открыть диалог выбора цвета модели"""
+        if not self.plotter or not hasattr(self, "model_actor"):
+            QMessageBox.warning(self, "Предупреждение", "Сначала визуализируйте модель")
+            return
+
+        # Открываем диалог выбора цвета
+        color = QColorDialog.getColor()
+
+        if color.isValid():
+            # Обновляем превью и текст
+            self.color_preview.setStyleSheet(
+                f"background-color: {color.name()}; border: 1px solid #999;"
+            )
+            self.color_value_label.setText(color.name())
+
+            # Применяем цвет к модели
+            prop = self.model_actor.GetProperty()
+            prop.SetColor(color.redF(), color.greenF(), color.blueF())
+            self.plotter.render()
+
+            self.log_message(f"Цвет модели изменен на: {color.name()}")
+
+    def reset_model_color(self):
+        """Сброс цвета модели на цвет текущего материала"""
+        if not self.plotter or not hasattr(self, "model_actor"):
+            return
+
+        # Получаем цвет текущего материала
+        material_colors = {
+            "Матовый": "#e9e5ce",
+            "Пластик": "#4A90E2",
+            "Гипс": "#F5F5F0",
+            "Сталь": "#A8A8A8",
+            "Стекло": "#B0E0E6",
+        }
+
+        default_color = material_colors.get(self.color_scheme, "#e9e5ce")
+        qc = QColor(default_color)
+
+        # Обновляем превью
+        self.color_preview.setStyleSheet(
+            f"background-color: {default_color}; border: 1px solid #999;"
+        )
+        self.color_value_label.setText(default_color)
+
+        # Применяем цвет
+        prop = self.model_actor.GetProperty()
+        prop.SetColor(qc.redF(), qc.greenF(), qc.blueF())
+        self.plotter.render()
+
+        self.log_message(f"Цвет модели сброшен на: {default_color}")
+
+    def on_panel_color_changed(self, color_code):
+        """Обработчик изменения цвета панели"""
+        if self.plotter:
+            from PyQt6.QtGui import QColor
+
+            qc = QColor(color_code)
+            # Создаем более светлый оттенок для верха
+            lighter = qc.lighter(120)
+            self.plotter.set_background(qc.name(), top=lighter.name())
+            self.plotter.render()
+            self.log_message(f"Цвет панели изменен на: {color_code}")
 
     def on_color_changed(self, color_name):
         """Обработчик выбора цвета (радиокнопки)"""
