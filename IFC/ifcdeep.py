@@ -1314,100 +1314,46 @@ class IFCViewer(QMainWindow):
 
     def update_statistics(self):
         """Обновление вкладки статистики"""
-        if not self.ifc_file:
+        if not self.element_actors:
             return
 
-        self.log("Сбор статистики модели...")
-
-        # Счетчики
         type_counts = defaultdict(int)
-        materials_set = set()
         total_volume = 0.0
-        floors_data = defaultdict(list)
+        materials_set = set()
 
-        # Настройки геометрии
-        settings = ifcopenshell.geom.settings()
-        settings.set(settings.USE_WORLD_COORDS, True)
-
-        # Получаем все элементы
-        elements = self.ifc_file.by_type("IfcProduct")
-
-        # Собираем этажи
-        floors = {}
-        for floor in self.ifc_file.by_type("IfcBuildingStorey"):
-            floor_name = getattr(floor, "Name", f"Level_{floor.id()}")
-            floors[floor.id()] = floor_name
-
-        # Проходим по элементам в element_actors (уже загруженная геометрия)
         for elem_id, elem_info in self.element_actors.items():
-            elem_type = elem_info["type"]
-            type_counts[elem_type] += 1
+            type_counts[elem_info["type"]] += 1
 
-            # Собираем материалы
-            try:
-                # Ищем элемент в IFC
-                element = None
-                try:
-                    element = (
-                        self.ifc_file.by_guid(elem_id) if elem_id != "N/A" else None
+            # Для объема нужно получить bounds из actor (если есть)
+            # В новой версии у нас нет actor, поэтому пропускаем объем или получаем по-другому
+            if "actor" in elem_info:
+                bounds = elem_info["actor"].GetBounds()
+                if bounds:
+                    total_volume += (
+                        (bounds[1] - bounds[0])
+                        * (bounds[3] - bounds[2])
+                        * (bounds[5] - bounds[4])
                     )
-                except:
-                    pass
 
-                if element:
-                    # Получаем материалы
-                    if hasattr(element, "HasAssociations"):
-                        for rel in element.HasAssociations:
-                            if rel.is_a("IfcRelAssociatesMaterial"):
-                                material = rel.RelatingMaterial
-                                if material.is_a("IfcMaterial"):
-                                    mat_name = getattr(material, "Name", "Unknown")
-                                    materials_set.add(mat_name)
-            except:
-                pass
-
-            # Вычисляем объем
-            actor = elem_info["actor"]
-            bounds = actor.GetBounds()
-            if bounds and len(bounds) == 6:
-                volume = (
-                    (bounds[1] - bounds[0])
-                    * (bounds[3] - bounds[2])
-                    * (bounds[5] - bounds[4])
-                )
-                total_volume += volume
-
-        # Заполняем таблицу статистики
         self.stats_table.setRowCount(0)
 
-        # Общая информация
-        stats_data = [
+        stats = [
             ("Всего элементов", len(self.element_actors)),
             ("Всего типов элементов", len(type_counts)),
-            ("Общий объем модели (м³)", f"{total_volume:.2f}"),
-            ("Количество уникальных материалов", len(materials_set)),
             (
-                "Материалы",
-                ", ".join(list(materials_set)[:10])
-                + ("..." if len(materials_set) > 10 else ""),
+                "Общий объем модели (м³)",
+                f"{total_volume:.2f}" if total_volume > 0 else "N/A",
             ),
+            ("", ""),
+            ("--- Распределение по типам ---", ""),
         ]
 
-        for stat_name, stat_value in stats_data:
+        for stat_name, stat_value in stats:
             row = self.stats_table.rowCount()
             self.stats_table.insertRow(row)
             self.stats_table.setItem(row, 0, QTableWidgetItem(stat_name))
             self.stats_table.setItem(row, 1, QTableWidgetItem(str(stat_value)))
 
-        # Добавляем разделитель
-        row = self.stats_table.rowCount()
-        self.stats_table.insertRow(row)
-        self.stats_table.setItem(
-            row, 0, QTableWidgetItem("--- Распределение по типам ---")
-        )
-        self.stats_table.setItem(row, 1, QTableWidgetItem(""))
-
-        # Распределение по типам (сортировка по количеству)
         for elem_type, count in sorted(
             type_counts.items(), key=lambda x: x[1], reverse=True
         ):
@@ -1415,10 +1361,6 @@ class IFCViewer(QMainWindow):
             self.stats_table.insertRow(row)
             self.stats_table.setItem(row, 0, QTableWidgetItem(f"  {elem_type}"))
             self.stats_table.setItem(row, 1, QTableWidgetItem(str(count)))
-
-        self.log(
-            f"Статистика собрана: {len(self.element_actors)} элементов, {total_volume:.2f} м³, {len(materials_set)} материалов"
-        )
 
     def batch_convert_to_glb(self):
         """Пакетная конвертация выбранных IFC файлов из списка в один GLB"""
@@ -1938,10 +1880,13 @@ class IFCViewer(QMainWindow):
         self.progress_bar.setVisible(False)
 
     def visualize_model(self):
-        """Визуализация всех элементов модели IFC с сохранением каждого элемента отдельно"""
+        """Быстрая визуализация - один большой меш вместо тысячи маленьких"""
         if not self.ifc_file:
             self.log("Нет загруженной модели для визуализации")
             return
+
+        self.cancel_btn.setEnabled(True)
+        self.cancel_visualization = False
 
         try:
             import ifcopenshell.geom
@@ -1955,10 +1900,8 @@ class IFCViewer(QMainWindow):
             settings = ifcopenshell.geom.settings()
             settings.set(settings.USE_WORLD_COORDS, True)
 
-            # Получаем все элементы, которые имеют геометрию
+            # Получаем все элементы
             elements_to_process = []
-
-            # Типы элементов, которые обычно имеют геометрию
             geometry_types = [
                 "IfcWall",
                 "IfcWallStandardCase",
@@ -1980,7 +1923,6 @@ class IFCViewer(QMainWindow):
                 "IfcRailing",
             ]
 
-            # Собираем все элементы указанных типов
             for elem_type in geometry_types:
                 try:
                     elements = self.ifc_file.by_type(elem_type)
@@ -1990,7 +1932,6 @@ class IFCViewer(QMainWindow):
                 except:
                     pass
 
-            # Если не нашли специфические типы, берем все IfcProduct
             if not elements_to_process:
                 elements_to_process = self.ifc_file.by_type("IfcProduct")
                 self.log(f"Найдено продуктов: {len(elements_to_process)}")
@@ -1998,56 +1939,58 @@ class IFCViewer(QMainWindow):
             total_elements = len(elements_to_process)
             self.log(f"Всего элементов для визуализации: {total_elements}")
 
-            # Очищаем словарь для хранения элементов
+            # Собираем все вершины и грани в один большой массив
+            all_vertices = []
+            all_faces = []
+            vertex_offset = 0
             self.element_actors = {}
-
-            # Статистика
             success_count = 0
-            color_found_count = 0
 
-            # Очищаем предыдущую сцену
-            self.plotter.clear()
-            self.plotter.set_background("silver")
+            # Словарь для хранения цветов (позже применим)
+            vertex_colors = []
 
-            # Обрабатываем каждый элемент отдельно
             for i, element in enumerate(elements_to_process):
-                progress = int((i / total_elements) * 90)
-                if i % 50 == 0:
+                if self.cancel_visualization:
+                    self.log("Визуализация прервана")
+                    return
+
+                if i % 100 == 0:
+                    progress = int((i / total_elements) * 90)
                     self.progress_bar.setValue(progress)
                     self.log(
-                        f"Обработка: {i + 1}/{total_elements} (добавлено: {success_count})"
+                        f"Обработка: {i + 1}/{total_elements} (вершин: {len(all_vertices)})"
                     )
                     QApplication.processEvents()
 
                 try:
-                    # Создаем геометрию элемента
                     shape = ifcopenshell.geom.create_shape(settings, element)
 
                     if shape and shape.geometry:
-                        # Получаем вершины и грани
                         verts = np.array(shape.geometry.verts).reshape(-1, 3)
                         faces = shape.geometry.faces
 
                         if len(verts) > 0 and len(faces) > 0:
-                            # Преобразуем грани в формат PyVista
-                            pv_faces = []
-                            for j in range(0, len(faces), 3):
-                                pv_faces.append(3)
-                                pv_faces.append(int(faces[j]))
-                                pv_faces.append(int(faces[j + 1]))
-                                pv_faces.append(int(faces[j + 2]))
-
-                            # Создаем mesh
-                            mesh = pv.PolyData(verts, np.array(pv_faces))
-
                             # Получаем цвет элемента
                             color = self.get_element_color_from_shape(shape, element)
-                            if color:
-                                color_found_count += 1
-                            else:
-                                color = self.get_default_color_by_type(element)
+                            if not color:
+                                color = self.get_default_color_by_type(element.is_a())
 
-                            # Получаем ID элемента
+                            # Добавляем вершины со смещением
+                            for vert in verts:
+                                all_vertices.append(vert)
+                                vertex_colors.append(color)
+
+                            # Добавляем грани со смещением
+                            for j in range(0, len(faces), 3):
+                                all_faces.append(3)  # Количество вершин в грани
+                                all_faces.append(faces[j] + vertex_offset)
+                                all_faces.append(faces[j + 1] + vertex_offset)
+                                all_faces.append(faces[j + 2] + vertex_offset)
+
+                            vertex_offset += len(verts)
+                            success_count += 1
+
+                            # Сохраняем информацию об элементе для подсветки
                             try:
                                 elem_id = (
                                     element.GlobalId
@@ -2057,68 +2000,91 @@ class IFCViewer(QMainWindow):
                             except:
                                 elem_id = f"elem_{i}"
 
-                            # Получаем имя элемента
                             elem_name = getattr(element, "Name", f"Unnamed_{elem_id}")
                             elem_type = element.is_a()
 
-                            # Добавляем mesh на сцену ОТДЕЛЬНО (не объединяем)
-                            actor = self.plotter.add_mesh(
-                                mesh,
-                                color=color,
-                                show_edges=False,
-                                opacity=0.7,
-                                lighting=True,
-                                smooth_shading=True,
-                                name=f"element_{elem_id}",
-                            )
-
-                            # Сохраняем информацию об элементе
+                            # Запоминаем диапазоны вершин для этого элемента (для подсветки)
                             self.element_actors[elem_id] = {
-                                "actor": actor,
-                                "mesh": mesh,
-                                "color": color,
                                 "name": elem_name,
                                 "type": elem_type,
                                 "id": elem_id,
+                                "color": color,
+                                "vertex_range": (
+                                    vertex_offset - len(verts),
+                                    vertex_offset,
+                                ),
+                                "face_range": (
+                                    len(all_faces) - ((len(faces) // 3) * 4),
+                                    len(all_faces),
+                                ),
                             }
 
-                            success_count += 1
-
                 except Exception as e:
-                    # Пропускаем элементы с ошибками
                     continue
 
             self.progress_bar.setValue(95)
             self.log(
-                f"Геометрия извлечена. Успешно добавлено: {success_count} элементов, цветов найдено: {color_found_count}"
+                f"Собрано {success_count} элементов, {len(all_vertices)} вершин, {len(all_faces) // 4} граней"
             )
 
-            if success_count == 0:
+            if len(all_vertices) == 0:
                 self.log("Не удалось извлечь геометрию ни одного элемента")
                 self.show_demo_geometry()
                 self.progress_bar.setVisible(False)
                 return
 
-            # Добавляем информационный текст
+            # Создаем ОДИН большой меш
+            self.log("Создание единого меша...")
+            vertices_array = np.array(all_vertices)
+            faces_array = np.array(all_faces)
+
+            # Создаем полидату
+            combined_mesh = pv.PolyData(vertices_array, faces_array)
+
+            # Создаем массив цветов для каждой вершины
+            self.log("Применение цветов к вершинам...")
+            color_array = np.array(vertex_colors)
+
+            # Добавляем цвета как point data
+            combined_mesh.point_data["colors"] = color_array
+
+            # Конвертируем RGB в формат для отображения
+            # Для правильного отображения цветов нужно использовать RGB триплеты
+            combined_mesh.point_data["RGB"] = color_array
+
+            # Очищаем сцену и добавляем ОДИН меш
+            self.log("Добавление меша в сцену...")
+            self.plotter.clear()
+            self.plotter.set_background("silver")
+
+            # Добавляем один большой меш вместо тысячи маленьких
+            self.plotter.add_mesh(
+                combined_mesh,
+                scalars="RGB",  # Используем RGB для цвета
+                rgb=True,
+                show_edges=False,
+                opacity=0.7,
+                lighting=True,
+                smooth_shading=True,
+                name="combined_mesh",
+            )
+
             self.plotter.add_text(
-                f"IFC Model\nElements loaded: {success_count}\nColors found: {color_found_count}",
+                f"IFC Model\nElements loaded: {success_count}",
                 position="upper_left",
                 font_size=12,
                 font="arial",
                 color="black",
             )
-
-            # Добавляем оси для ориентации
             self.plotter.show_axes()
-
-            # Настраиваем камеру
             self.plotter.reset_camera()
             self.plotter.show()
 
             self.progress_bar.setValue(100)
             self.progress_bar.setVisible(False)
+            self.cancel_btn.setEnabled(False)
             self.log(
-                f"Визуализация завершена. Отображено {success_count} отдельных элементов"
+                f"Визуализация завершена. Отображен единый меш из {success_count} элементов"
             )
 
         except Exception as e:
@@ -2224,26 +2190,6 @@ class IFCViewer(QMainWindow):
             # Отображаем атрибуты
             self.attributes_table.setRowCount(0)
 
-            # Получаем ID элемента
-            element_id = data.get("global_id") or data.get("id")
-            element_name = data.get("name", "Unknown")
-
-            # Находим элемент в IFC файле
-            element = None
-            if hasattr(self, "ifc_file") and self.ifc_file:
-                try:
-                    # Ищем элемент по GlobalId
-                    if element_id != "N/A":
-                        element = self.ifc_file.by_guid(element_id)
-                    else:
-                        # Ищем по id
-                        for elem in self.ifc_file.by_type("IfcProduct"):
-                            if elem.id() == element_id:
-                                element = elem
-                                break
-                except:
-                    pass
-
             if isinstance(data, dict):
                 row = 0
                 for key, value in data.items():
@@ -2260,131 +2206,23 @@ class IFCViewer(QMainWindow):
                         )
                         row += 1
 
-                # Отображаем свойства IfcPropertySet
-                self.properties_table.setRowCount(0)
-                if element:
-                    properties = self.get_element_properties(element)
-                    for prop in properties:
-                        row = self.properties_table.rowCount()
-                        self.properties_table.insertRow(row)
-                        self.properties_table.setItem(
-                            row, 0, QTableWidgetItem(prop["set"])
-                        )
-                        self.properties_table.setItem(
-                            row, 1, QTableWidgetItem(prop["name"])
-                        )
-                        self.properties_table.setItem(
-                            row, 2, QTableWidgetItem(prop["value"])
-                        )
-
-                # Отображаем материалы с объемами
-                self.materials_table.setRowCount(0)
-                if element:
-                    materials = self.get_element_materials_with_volume(element)
-                    for mat in materials:
-                        row = self.materials_table.rowCount()
-                        self.materials_table.insertRow(row)
-                        self.materials_table.setItem(
-                            row, 0, QTableWidgetItem(mat["name"])
-                        )
-                        self.materials_table.setItem(
-                            row, 1, QTableWidgetItem(f"{mat['volume']:.3f}")
-                        )
-
-                # ... остальной код подсветки и фокусировки камеры ...
                 element_id = data.get("global_id") or data.get("id")
                 element_name = data.get("name", "Unknown")
 
                 self.log(f"Выделен элемент: {element_name} (ID: {element_id})")
 
-                # Снимаем предыдущую подсветку
-                if hasattr(self, "highlighted_actor") and self.highlighted_actor:
-                    try:
-                        # Ищем сохраненный оригинальный цвет
-                        for elem_id, elem_info in self.element_actors.items():
-                            if elem_info["actor"] == self.highlighted_actor:
-                                original_color = elem_info["color"]
-                                self.highlighted_actor.GetProperty().SetColor(
-                                    original_color
-                                )
-                                self.highlighted_actor.GetProperty().SetLineWidth(1)
-                                break
-                    except:
-                        pass
-
-                # Подсвечиваем новый элемент
+                # Подсветка элемента в едином меше
                 if (
                     hasattr(self, "element_actors")
                     and str(element_id) in self.element_actors
                 ):
-                    actor_info = self.element_actors[str(element_id)]
-                    actor = actor_info["actor"]
+                    elem_info = self.element_actors[str(element_id)]
 
-                    # Подсвечиваем красным цветом
-                    actor.GetProperty().SetColor(
-                        1.0, 0.0, 0.0
-                    )  # Красный цвет подсветки
-                    actor.GetProperty().SetLineWidth(3)
-                    actor.GetProperty().SetEdgeVisibility(True)
-
-                    self.highlighted_actor = actor
-
-                    # Фокусируем камеру на элементе (ИСПРАВЛЕННЫЙ КОД)
-                    try:
-                        bounds = actor.GetBounds()
-                        if bounds and len(bounds) == 6:
-                            # Вычисляем центр элемента
-                            center_x = (bounds[0] + bounds[1]) / 2
-                            center_y = (bounds[2] + bounds[3]) / 2
-                            center_z = (bounds[4] + bounds[5]) / 2
-
-                            # Устанавливаем точку фокуса камеры
-                            self.plotter.camera.focal_point = (
-                                center_x,
-                                center_y,
-                                center_z,
-                            )
-
-                            # Вычисляем расстояние до камеры на основе размера элемента
-                            size_x = bounds[1] - bounds[0]
-                            size_y = bounds[3] - bounds[2]
-                            size_z = bounds[5] - bounds[4]
-                            max_size = max(size_x, size_y, size_z)
-                            distance = max(10, max_size * 2)
-
-                            # Устанавливаем позицию камеры
-                            current_pos = self.plotter.camera.position
-                            direction = (
-                                current_pos[0] - center_x,
-                                current_pos[1] - center_y,
-                                current_pos[2] - center_z,
-                            )
-                            length = (
-                                direction[0] ** 2
-                                + direction[1] ** 2
-                                + direction[2] ** 2
-                            ) ** 0.5
-                            if length > 0:
-                                direction = (
-                                    direction[0] / length,
-                                    direction[1] / length,
-                                    direction[2] / length,
-                                )
-
-                            new_pos = (
-                                center_x + direction[0] * distance,
-                                center_y + direction[1] * distance,
-                                center_z + direction[2] * distance,
-                            )
-                            self.plotter.camera.position = new_pos
-
-                            # Обновляем вид
-                            self.plotter.camera.view_up = (0, 0, 1)
-                            self.plotter.render()
-
-                            self.log(f"Камера сфокусирована на элементе {element_name}")
-                    except Exception as e:
-                        self.log(f"Ошибка фокусировки камеры: {str(e)}")
+                    # TODO: Здесь сложно подсветить отдельный элемент в едином меше
+                    # Для подсветки нужно менять цвета конкретных вершин
+                    self.log(
+                        f"Элемент {element_name} найден, но подсветка в едином меше требует перестроения геометрии"
+                    )
                 else:
                     self.log(
                         f"3D модель для элемента {element_name} не найдена в сцене"

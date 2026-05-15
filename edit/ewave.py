@@ -56,6 +56,7 @@ PANEL_HEIGHT = 3100  # мм по оси Z
 PANEL_DEPTH = 40  # мм по оси Y
 WORKING_THRESHOLD = 15  # Рабочая зона: Y < 15 мм
 
+# ИЗМЕНЕНО: теперь по умолчанию изображение занимает ВСЮ ширину и 90% высоты
 DEFAULT_HM_WIDTH_RATIO = 0.9
 DEFAULT_HM_HEIGHT_RATIO = 0.9
 
@@ -90,25 +91,29 @@ class HeightMap:
         self.panel_side = panel_side
 
         # Размеры карты на панели (мм)
-        self.width_mm = (
-            width_mm if width_mm is not None else panel_width * DEFAULT_HM_WIDTH_RATIO
-        )
+        # ИЗМЕНЕНО: если ширина не указана, используем всю ширину панели
+        if width_mm is None:
+            self.width_mm = panel_width  # Вся ширина панели
+        else:
+            self.width_mm = width_mm
+
         self.height_mm = (
             height_mm
             if height_mm is not None
             else panel_height * DEFAULT_HM_HEIGHT_RATIO
         )
 
-        # Смещение карты (центрируем по умолчанию)
+        # Смещение карты - теперь X смещение по умолчанию 0 (вплотную к левому краю)
+        # ИЗМЕНЕНО: смещение X по умолчанию = 0 (от левого края)
         self.offset_x_mm = (
             offset_x_mm
             if offset_x_mm is not None
-            else (panel_width - self.width_mm) / 2
+            else 0  # Было (panel_width - self.width_mm) / 2 - теперь левый край
         )
         self.offset_z_mm = (
             offset_z_mm
             if offset_z_mm is not None
-            else (panel_height - self.height_mm) / 2
+            else (panel_height - self.height_mm) / 2  # Центрируем по высоте
         )
 
         self.keep_aspect = keep_aspect
@@ -146,7 +151,7 @@ class HeightMap:
                 # Изображение выше - подгоняем по высоте
                 self.height_mm = requested_height
                 self.width_mm = requested_height * img_ratio
-                # Центрируем по ширине
+                # ИЗМЕНЕНО: при сохранении пропорций и нехватке ширины - центрируем по X
                 self.offset_x_mm = (self.panel_width - self.width_mm) / 2
 
         # Применяем зеркалирование до конвертации в серый
@@ -764,7 +769,7 @@ class MainWindow(QMainWindow):
         size_layout.addWidget(QLabel("Ширина (мм):"), 0, 0)
         self.hm_width = QDoubleSpinBox()
         self.hm_width.setRange(10, PANEL_WIDTH)
-        self.hm_width.setValue(PANEL_WIDTH * DEFAULT_HM_WIDTH_RATIO)
+        self.hm_width.setValue(PANEL_WIDTH)  # ИЗМЕНЕНО: по умолчанию вся ширина
         self.hm_width.setEnabled(False)
         size_layout.addWidget(self.hm_width, 0, 1)
         size_layout.addWidget(QLabel("Высота (мм):"), 1, 0)
@@ -775,13 +780,13 @@ class MainWindow(QMainWindow):
         size_layout.addWidget(self.hm_height, 1, 1)
         size_layout.addWidget(QLabel("Позиция X (мм):"), 2, 0)
         self.hm_off_x = QDoubleSpinBox()
-        self.hm_off_x.setRange(0, PANEL_WIDTH)
-        self.hm_off_x.setValue((PANEL_WIDTH - PANEL_WIDTH * DEFAULT_HM_WIDTH_RATIO) / 2)
+        self.hm_off_x.setRange(-1 * PANEL_WIDTH, PANEL_WIDTH)
+        self.hm_off_x.setValue(0)  # ИЗМЕНЕНО: по умолчанию 0 (левый край)
         self.hm_off_x.setEnabled(False)
         size_layout.addWidget(self.hm_off_x, 2, 1)
         size_layout.addWidget(QLabel("Позиция Z (мм):"), 3, 0)
         self.hm_off_z = QDoubleSpinBox()
-        self.hm_off_z.setRange(0, PANEL_HEIGHT)
+        self.hm_off_z.setRange(-1 * PANEL_HEIGHT, PANEL_HEIGHT)
         self.hm_off_z.setValue(
             (PANEL_HEIGHT - PANEL_HEIGHT * DEFAULT_HM_HEIGHT_RATIO) / 2
         )
