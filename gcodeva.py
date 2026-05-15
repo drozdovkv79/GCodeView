@@ -1914,6 +1914,10 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Настройка окружения для macOS
+    os.environ["VTK_OPENGL_HAS_OSMESA"] = "0"
+    os.environ["VTK_USE_COCOA"] = "1"
+
     """Основная функция"""
     app = QApplication(sys.argv)
 

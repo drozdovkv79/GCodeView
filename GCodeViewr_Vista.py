@@ -368,7 +368,7 @@ class GCodeApp(QtWidgets.QMainWindow):
         self.layout.addLayout(panel, 1)
         self.layout.addWidget(self.plotter.interactor, 4)
 
-        # добавляем бокс для обрезки
+        """# добавляем бокс для обрезки
         self.plotter.add_box_widget(
             callback=self.update_visibility,
             bounds=(-700, 700, -100, 100, 0, 1000),
@@ -376,7 +376,7 @@ class GCodeApp(QtWidgets.QMainWindow):
             rotation_enabled=False,
             color="black",
             interaction_event="always",
-        )
+        )"""
         # -- закончили создавать интерфейс
         self.mesh = None
         self.actor = None
