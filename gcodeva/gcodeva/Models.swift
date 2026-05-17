@@ -38,6 +38,7 @@ class AppState: ObservableObject {
     @Published var rawPoints: [GCodePoint] = []
     @Published var stats: GCodeStats?
     @Published var isLoading: Bool = false
+    @Published var isCalculatingAnalytics: Bool = false // НОВОЕ
     @Published var progress: Double = 0
     @Published var logMessages: [String] = []
     
@@ -52,7 +53,7 @@ class AppState: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var videoWidth: Int = 1920; @Published var videoHeight: Int = 1080
     @Published var showAxis: Bool = true
-    @Published var modelSize: simd_float3 = simd_float3(1,1,1) // ИСПРАВЛЕНО: дефолт не 0
+    @Published var modelSize: simd_float3 = simd_float3(1,1,1)
     
     @Published var processedLayers: [LayerMesh] = []
     @Published var modelBoundingBox: (min: simd_float3, max: simd_float3)? = nil
@@ -89,26 +90,139 @@ class AppState: ObservableObject {
     func loadSelectedFile() {
         guard let file = selectedFileURL else { return }
         isLoading = true
-        log("📂 Start analyzing: \(file.lastPathComponent)")
-        let startTime = CFAbsoluteTimeGetCurrent()
+        stats = nil
+        log("📂 Start loading: \(file.lastPathComponent)")
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = GCodeParser.parse(file: file) { progress in
+            let parseStartTime = CFAbsoluteTimeGetCurrent()
+            
+            let points = GCodeParser.parse(file: file) { progress in
                 DispatchQueue.main.async { self.progress = progress }
             }
             
             let parseEndTime = CFAbsoluteTimeGetCurrent()
+            let parseMs = (parseEndTime - parseStartTime) * 1000
+            
             DispatchQueue.main.async {
-                self.log("⏱ File Read & Parse: \(String(format: "%.2f", (parseEndTime - startTime) * 1000)) ms")
+                // Показываем в логе интерфейса
+                self.log("⏱ Total Parse Time: \(String(format: "%.0f", parseMs)) ms")
+                self.log("📊 Points extracted: \(points.count)")
                 
-                self.rawPoints = result.points
-                self.stats = result.stats
+                self.rawPoints = points
                 self.tubeDiameter = self.tempTubeDiameter
                 self.modelColor = self.tempModelColor
                 
                 DispatchQueue.global(qos: .userInitiated).async {
                     self.processGeometry()
                 }
+            }
+        }
+    }
+    
+    // НОВОЕ: Вычисление аналитики по кнопке
+    func calculateAnalytics() {
+        guard !rawPoints.isEmpty else { return }
+        isCalculatingAnalytics = true
+        log("📊 Calculating analytics...")
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            var stats = GCodeStats()
+            var extMinX: Float = .greatestFiniteMagnitude, extMaxX: Float = -.greatestFiniteMagnitude
+            var extMinY: Float = .greatestFiniteMagnitude, extMaxY: Float = -.greatestFiniteMagnitude
+            var extMinZ: Float = .greatestFiniteMagnitude, extMaxZ: Float = -.greatestFiniteMagnitude
+            var totalE: Float = 0
+            var maxSpeed: Float = 0
+            var prevPoint: GCodePoint? = nil
+            var extPathLength: Float = 0
+            var travPathLength: Float = 0
+            var printTime: Float = 0
+            var sharpCorners = 0
+            var prevExt: GCodePoint? = nil
+            var prevPrevExt: GCodePoint? = nil
+            
+            var layersOpt: [Int: [simd_float3]] = [:]
+            
+            for point in self.rawPoints {
+                stats.totalPoints += 1
+                
+                if point.isExtrusion {
+                    stats.extrusionPoints += 1
+                    if point.x < extMinX { extMinX = point.x }; if point.x > extMaxX { extMaxX = point.x }
+                    if point.y < extMinY { extMinY = point.y }; if point.y > extMaxY { extMaxY = point.y }
+                    if point.z < extMinZ { extMinZ = point.z }; if point.z > extMaxZ { extMaxZ = point.z }
+                    totalE += point.e
+                    if point.feedRate > maxSpeed { maxSpeed = point.feedRate }
+                    
+                    // Углы
+                    if let p2 = prevExt, let p1 = prevPrevExt, p1.layer == point.layer {
+                        let v1 = simd_float2(p2.x - p1.x, p2.y - p1.y)
+                        let v2 = simd_float2(point.x - p2.x, point.y - p2.y)
+                        let l1 = simd_length(v1), l2 = simd_length(v2)
+                        if l1 > 0.01 && l2 > 0.01 {
+                            let dot = simd_dot(v1/l1, v2/l2)
+                            let angle = acos(min(max(dot, -1.0), 1.0)) * (180.0 / Float.pi)
+                            if angle < 120.0 { sharpCorners += 1 }
+                        }
+                    }
+                    prevPrevExt = prevExt
+                    prevExt = point
+                    
+                    let pos = simd_float3(Float(point.x), Float(point.z), -Float(point.y))
+                    layersOpt[point.layer, default: []].append(pos)
+                } else {
+                    stats.travelPoints += 1
+                }
+                
+                // Пути и время
+                if let prev = prevPoint {
+                    let dx = point.x - prev.x
+                    let dy = point.y - prev.y
+                    let dz = point.z - prev.z
+                    let distSq = dx*dx + dy*dy + dz*dz
+                    
+                    if distSq > 0.0001 {
+                        let dist = sqrt(distSq)
+                        let speed = point.feedRate > 0 ? point.feedRate : 1000.0
+                        if point.isExtrusion { extPathLength += dist } else { travPathLength += dist }
+                        printTime += (dist / speed) * 60.0
+                    }
+                }
+                prevPoint = point
+            }
+            
+            // Заполнение Stats
+            stats.width = extMaxX - extMinX; stats.length = extMaxY - extMinY; stats.height = extMaxZ - extMinZ
+            stats.maxZ = extMaxZ; stats.centerOfMassX = extMinX + stats.width / 2.0; stats.centerOfMassY = extMinY + stats.length / 2.0
+            stats.numLayers = (self.rawPoints.map { $0.layer }.max() ?? 0) + 1
+            stats.totalMaterial = totalE
+            let filamentArea = Float.pi * Float.pi * 0.765625 // (1.75/2)^2
+            stats.volume = totalE * filamentArea
+            stats.maxSpeed = maxSpeed; stats.extrusionPathLength = extPathLength; stats.travelPathLength = travPathLength
+            stats.estimatedPrintTimeMin = printTime / 60.0
+            stats.averageFlowRate = extPathLength > 0 ? (stats.volume / extPathLength) : 0
+            stats.boundingBoxVolume = stats.width * stats.length * stats.height
+            stats.xyFootprintArea = stats.width * stats.length
+            stats.modelCompactness = stats.boundingBoxVolume > 0 ? (stats.volume / stats.boundingBoxVolume) : 0
+            stats.sharpCornersCount = sharpCorners
+            
+            // Оптимизация коллинеарности
+            var originalCount = 0, optimizedCount = 0
+            for (_, var points) in layersOpt {
+                originalCount += points.count
+                removeCollinearPoints(from: &points, angleThresholdDeg: 5.0)
+                optimizedCount += points.count
+            }
+            stats.originalExtrusionPoints = originalCount
+            stats.optimizedExtrusionPoints = optimizedCount
+            stats.optimizationReductionPercent = originalCount > 0 ? (1.0 - Double(optimizedCount) / Double(originalCount)) * 100.0 : 0.0
+            
+            let endTime = CFAbsoluteTimeGetCurrent()
+            
+            DispatchQueue.main.async {
+                self.stats = stats
+                self.isCalculatingAnalytics = false
+                self.log("⏱ Analytics calculated in \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
             }
         }
     }
@@ -120,7 +234,6 @@ class AppState: ObservableObject {
         let segments = 8
         
         var layers: [Int: [simd_float3]] = [:]
-        // ИСПРАВЛЕНО: Быстрый расчет Bounding Box математически
         var globalMin = simd_float3(repeating: Float.greatestFiniteMagnitude)
         var globalMax = simd_float3(repeating: -Float.greatestFiniteMagnitude)
         
@@ -131,7 +244,6 @@ class AppState: ObservableObject {
             globalMax = simd_max(globalMax, pos)
         }
         
-        let collinearStartTime = CFAbsoluteTimeGetCurrent()
         var meshes: [LayerMesh] = []
         meshes.reserveCapacity(layers.count)
         
@@ -148,15 +260,13 @@ class AppState: ObservableObject {
         let endTime = CFAbsoluteTimeGetCurrent()
         
         DispatchQueue.main.async {
-            self.log("⏱ Collinear removal: \(String(format: "%.2f", (collinearStartTime - startTime) * 1000)) ms")
-            self.log("⏱ Geometry buffers prep: \(String(format: "%.2f", (endTime - collinearStartTime) * 1000)) ms")
+            self.log("⏱ 3D Geometry prep: \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
             
             self.processedLayers = meshes
             self.modelBoundingBox = (globalMin, globalMax)
             self.modelSize = globalMax - globalMin
             self.isLoading = false
             
-            DispatchQueue.global(qos: .userInitiated).async { self.calculateOptimizationStats() }
             self.renderTrigger += 1
         }
     }
@@ -169,19 +279,6 @@ class AppState: ObservableObject {
     
     func applyColor() { modelColor = tempModelColor; renderTrigger += 1; log("Model color updated") }
     func changeMaterial(_ material: MaterialPreset) { selectedMaterial = material; renderTrigger += 1; log("Material changed to \(material.rawValue)") }
-    
-    private func calculateOptimizationStats() {
-        let extPts = rawPoints.filter { $0.isExtrusion }
-        var layersOpt: [Int: [simd_float3]] = [:]
-        for point in extPts { let pos = simd_float3(Float(point.x), Float(point.z), -Float(point.y)); layersOpt[point.layer, default: []].append(pos) }
-        var originalCount = 0, optimizedCount = 0
-        for (_, var points) in layersOpt { originalCount += points.count; removeCollinearPoints(from: &points, angleThresholdDeg: 5.0); optimizedCount += points.count }
-        DispatchQueue.main.async {
-            self.stats?.originalExtrusionPoints = originalCount
-            self.stats?.optimizedExtrusionPoints = optimizedCount
-            self.stats?.optimizationReductionPercent = originalCount > 0 ? (1.0 - Double(optimizedCount) / Double(originalCount)) * 100.0 : 0.0
-        }
-    }
     
     private func createTubeBuffers(for path: [simd_float3], radius: Float, segments: Int) -> (v: [SCNVector3], n: [SCNVector3], i: [Int32])? {
         let pointCount = path.count
