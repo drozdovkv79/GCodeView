@@ -15,54 +15,65 @@ class GCodeParser {
         var extMinZ: Float = .greatestFiniteMagnitude, extMaxZ: Float = -.greatestFiniteMagnitude
         var totalE: Float = 0
         var maxSpeed: Float = 0
-        
-        var prevPoint: GCodePoint? = nil
-        var extPathLength: Float = 0
-        var travPathLength: Float = 0
-        var printTime: Float = 0
     }
     
-    static func parse(file: URL, progress: @escaping (Double) -> Void) -> (points: [GCodePoint], stats: GCodeStats) {
+    static func parse(file: URL, progress: @escaping (Double) -> Void) -> [GCodePoint] {
         var state = ParserState()
-        state.points.reserveCapacity(1_000_000)
+        // Резервируем память с запасом (63МБ ~= 2 миллиона строк)
+        state.points.reserveCapacity(2_000_000)
         
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let t0 = CFAbsoluteTimeGetCurrent()
         
-        guard let data = try? Data(contentsOf: file, options: .alwaysMapped) else {
-            return (state.points, state.stats)
-        }
+        guard let data = try? Data(contentsOf: file, options: .alwaysMapped) else { return state.points }
         
-        let readTime = CFAbsoluteTimeGetCurrent()
+        let t1 = CFAbsoluteTimeGetCurrent()
         
         let totalBytes = data.count
         var lastProgressByte = 0
         let progressStep = totalBytes / 20
         
+        // ЧИСТАЯ АРИФМЕТИКА УКАЗАТЕЛЕЙ (Обход проверок границ Swift)
         data.withUnsafeBytes { rawBufferPointer in
-            let bytes = rawBufferPointer.bindMemory(to: UInt8.self)
-            var lineStart = 0
+            let basePtr = rawBufferPointer.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            var ptr = basePtr
+            let endPtr = basePtr + totalBytes
             
-            for i in 0..<totalBytes {
-                let byte = bytes[i]
-                if byte == 10 || byte == 13 {
-                    if i > lineStart {
-                        processLine(bytes: bytes, start: lineStart, end: i, state: &state)
+            var lineStart = basePtr
+            
+            while ptr < endPtr {
+                let byte = ptr.pointee
+                if byte == 10 || byte == 13 { // \n или \r
+                    if ptr > lineStart {
+                        processLine(start: lineStart, end: ptr, state: &state)
                     }
-                    lineStart = i + 1
                     
-                    if i - lastProgressByte > progressStep {
-                        lastProgressByte = i
-                        progress(Double(i) / Double(totalBytes) * 50.0)
+                    // Пропускаем все переносы строк подряд
+                    lineStart = ptr + 1
+                    while ptr < endPtr && (ptr.pointee == 10 || ptr.pointee == 13) {
+                        ptr = ptr + 1
+                        lineStart = ptr
                     }
+                    
+                    // Обновление прогресса
+                    let bytesRead = ptr - basePtr
+                    if bytesRead - lastProgressByte > progressStep {
+                        lastProgressByte = bytesRead
+                        progress(Double(bytesRead) / Double(totalBytes) * 50.0)
+                    }
+                } else {
+                    ptr = ptr + 1
                 }
             }
-            if totalBytes > lineStart {
-                processLine(bytes: bytes, start: lineStart, end: totalBytes, state: &state)
+            
+            // Обработка последней строки, если файл не кончается переносом
+            if ptr > lineStart {
+                processLine(start: lineStart, end: ptr, state: &state)
             }
         }
         
-        let parseTime = CFAbsoluteTimeGetCurrent()
+        let t2 = CFAbsoluteTimeGetCurrent()
         
+        // Легкая статистика (миллисекунды)
         if state.stats.extrusionPoints > 0 {
             state.stats.width = state.extMaxX - state.extMinX
             state.stats.length = state.extMaxY - state.extMinY
@@ -73,67 +84,59 @@ class GCodeParser {
         } else {
             state.stats.width = 0; state.stats.length = 0; state.stats.height = 0; state.stats.maxZ = 0
         }
-        
         state.stats.numLayers = state.currentLayer + 1
         state.stats.totalMaterial = state.totalE
-        
-        let filamentDiameter: Float = 1.75
-        let filamentArea = Float.pi * (filamentDiameter / 2) * (filamentDiameter / 2)
-        state.stats.volume = state.totalE * filamentArea
-        
         state.stats.maxSpeed = state.maxSpeed
-        state.stats.extrusionPathLength = state.extPathLength
-        state.stats.travelPathLength = state.travPathLength
-        state.stats.estimatedPrintTimeMin = state.printTime / 60.0
-        state.stats.averageFlowRate = state.extPathLength > 0 ? (state.stats.volume / state.extPathLength) : 0
-        state.stats.boundingBoxVolume = state.stats.width * state.stats.length * state.stats.height
-        state.stats.xyFootprintArea = state.stats.width * state.stats.length
-        state.stats.modelCompactness = state.stats.boundingBoxVolume > 0 ? (state.stats.volume / state.stats.boundingBoxVolume) : 0
         
-        progress(100.0)
+        let t3 = CFAbsoluteTimeGetCurrent()
         
-        let endTime = CFAbsoluteTimeGetCurrent()
-        print("⏱ File Read: \(String(format: "%.2f", (readTime - startTime) * 1000)) ms")
-        print("⏱ Parsing: \(String(format: "%.2f", (parseTime - readTime) * 1000)) ms")
-        print("⏱ Stats Calc: \(String(format: "%.2f", (endTime - parseTime) * 1000)) ms")
+        // ЛОГ В КОНСОЛЬ XCODE
+        print("⏱ 1. File Read (mmap): \(String(format: "%.2f", (t1 - t0) * 1000)) ms")
+        print("⏱ 2. Pure Parsing Loop (Raw Ptrs): \(String(format: "%.2f", (t2 - t1) * 1000)) ms")
+        print("⏱ 3. Light Stats Calc: \(String(format: "%.2f", (t3 - t2) * 1000)) ms")
+        print("⏱ TOTAL PARSE TIME: \(String(format: "%.2f", (t3 - t0) * 1000)) ms")
         
-        return (state.points, state.stats)
+        return state.points
     }
     
     @inline(__always)
-    private static func processLine(bytes: UnsafeBufferPointer<UInt8>, start: Int, end: Int, state: inout ParserState) {
+    private static func processLine(start: UnsafePointer<UInt8>, end: UnsafePointer<UInt8>, state: inout ParserState) {
         guard end - start > 3 else { return }
-        var idx = start
+        var p = start
         
-        while idx < end && bytes[idx] == 32 { idx += 1 }
-        guard idx < end && bytes[idx] == 71 else { return }
-        idx += 1
-        guard idx < end && (bytes[idx] == 48 || bytes[idx] == 49) else { return }
-        let isG1 = bytes[idx] == 49
-        idx += 1
-        guard idx < end && (bytes[idx] == 32 || bytes[idx] == 9) else { return }
+        // Пропускаем пробелы
+        while p < end && p.pointee == 32 { p = p + 1 }
+        
+        guard p < end && p.pointee == 71 else { return } // 'G'
+        p = p + 1
+        guard p < end && (p.pointee == 48 || p.pointee == 49) else { return } // '0' или '1'
+        let isG1 = p.pointee == 49
+        p = p + 1
+        guard p < end && (p.pointee == 32 || p.pointee == 9) else { return } // Пробел или Tab
         
         var posX: Float? = nil, posY: Float? = nil, posZ: Float? = nil, posE: Float? = nil, posF: Float? = nil
         
-        while idx < end {
-            let c = bytes[idx]
-            if c == 59 { return }
+        while p < end {
+            let c = p.pointee
+            if c == 59 { return } // ';' комментарий
             
-            if c == 88 || c == 89 || c == 90 || c == 69 || c == 70 {
+            if c == 88 || c == 89 || c == 90 || c == 69 || c == 70 { // X, Y, Z, E, F
                 let param = c
-                idx += 1
-                if let val = parseFloat(bytes: bytes, start: idx, end: end) {
+                p = p + 1 // Перепрыгиваем букву параметра
+                if let result = parseFloat(start: p, end: end) {
                     switch param {
-                    case 88: posX = val
-                    case 89: posY = val
-                    case 90: posZ = val
-                    case 69: posE = val
-                    case 70: posF = val
+                    case 88: posX = result.value
+                    case 89: posY = result.value
+                    case 90: posZ = result.value
+                    case 69: posE = result.value
+                    case 70: posF = result.value
                     default: break
                     }
+                    p = result.nextPtr // Перепрыгиваем само число
                 }
+            } else {
+                p = p + 1 // Идем к следующему символу
             }
-            idx += 1
         }
         
         if let v = posX { state.x = v }
@@ -149,9 +152,7 @@ class GCodeParser {
         if let v = posF { state.f = v }
         
         let hasExtrusion = isG1 && state.e > 0
-        let point = GCodePoint(x: state.x, y: state.y, z: state.z, e: state.e, feedRate: state.f, layer: state.currentLayer, isExtrusion: hasExtrusion)
-        
-        state.points.append(point)
+        state.points.append(GCodePoint(x: state.x, y: state.y, z: state.z, e: state.e, feedRate: state.f, layer: state.currentLayer, isExtrusion: hasExtrusion))
         state.stats.totalPoints += 1
         
         if hasExtrusion {
@@ -164,54 +165,40 @@ class GCodeParser {
         } else {
             state.stats.travelPoints += 1
         }
-        
-        if let prev = state.prevPoint {
-            let dx = point.x - prev.x
-            let dy = point.y - prev.y
-            let dz = point.z - prev.z
-            let dist = sqrt(dx*dx + dy*dy + dz*dz)
-            let speed = point.feedRate > 0 ? point.feedRate : 1000.0
-            
-            if point.isExtrusion {
-                state.extPathLength += dist
-                state.printTime += (dist / speed) * 60.0
-            } else {
-                state.travPathLength += dist
-                state.printTime += (dist / speed) * 60.0
-            }
-        }
-        state.prevPoint = point
     }
     
     @inline(__always)
-    private static func parseFloat(bytes: UnsafeBufferPointer<UInt8>, start: Int, end: Int) -> Float? {
-        var i = start
+    private static func parseFloat(start: UnsafePointer<UInt8>, end: UnsafePointer<UInt8>) -> (value: Float, nextPtr: UnsafePointer<UInt8>)? {
+        var p = start
         var val: Float = 0
         var sign: Float = 1
         var hasDigits = false
         
-        if i < end && bytes[i] == 45 { sign = -1; i += 1 }
-        while i < end {
-            let c = bytes[i]
-            if c >= 48 && c <= 57 {
+        if p < end && p.pointee == 45 { sign = -1; p = p + 1 } // '-'
+        while p < end {
+            let c = p.pointee
+            if c >= 48 && c <= 57 { // '0'-'9'
                 val = val * 10 + Float(c - 48)
                 hasDigits = true
-                i += 1
+                p = p + 1
             } else { break }
         }
-        if i < end && bytes[i] == 46 {
-            i += 1
+        if p < end && p.pointee == 46 { // '.'
+            p = p + 1
             var dec: Float = 0.1
-            while i < end {
-                let c = bytes[i]
+            while p < end {
+                let c = p.pointee
                 if c >= 48 && c <= 57 {
                     val += Float(c - 48) * dec
                     dec *= 0.1
                     hasDigits = true
-                    i += 1
+                    p = p + 1
                 } else { break }
             }
         }
-        return hasDigits ? sign * val : nil
+        if hasDigits {
+            return (sign * val, p) // Возвращаем число и указатель на следующий за числом символ
+        }
+        return nil
     }
 }

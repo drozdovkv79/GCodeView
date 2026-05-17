@@ -95,6 +95,30 @@ struct ContentView: View {
     // Блок экспорта
     private var exportContent: some View {
         VStack(spacing: 10) {
+            // НОВАЯ КНОПКА АНАЛИТИКИ
+            Button(action: { appState.calculateAnalytics() }) {
+                HStack {
+                    Image(systemName: "chart.bar")
+                    Text(appState.isCalculatingAnalytics ? "Calculating..." : "Calculate Analytics")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(appState.rawPoints.isEmpty || appState.isCalculatingAnalytics)
+            
+            Divider()
+            
+            // Настройки разрешения видео
+            HStack {
+                Text("Video W:")
+                TextField("Width", value: $appState.videoWidth, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                Text("H:")
+                TextField("Height", value: $appState.videoHeight, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+            }
+            
             Button(action: { recordVideo() }) {
                 HStack {
                     Image(systemName: appState.isRecording ? "stop.circle" : "video")
