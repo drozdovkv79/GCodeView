@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import SceneKit
+import AVFoundation
+import SceneKit // Добавлен импорт для SCNView
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
@@ -19,7 +20,6 @@ struct ContentView: View {
     private var leftPanel: some View {
         ScrollView {
             VStack(spacing: 15) {
-                
                 HStack {
                     Image(systemName: "folder").foregroundColor(.secondary)
                     Text(appState.currentDirectory?.lastPathComponent ?? "Select Directory")
@@ -28,21 +28,19 @@ struct ContentView: View {
                     Button("Browse") { selectDirectory() }.buttonStyle(.bordered)
                 }
                 
-                // Таблица файлов
                 VStack(spacing: 0) {
                     HStack(spacing: 5) {
                         sortButton(title: "Name", order: .name)
                         sortButton(title: "Size", order: .size)
                         sortButton(title: "Date", order: .date)
                     }
-                    .padding(5)
-                    .background(Color(NSColor.controlBackgroundColor))
+                    .padding(5).background(Color(NSColor.controlBackgroundColor))
                     
                     List(appState.sortedFiles, id: \.id, selection: $appState.selectedFileURL) { item in
                         HStack(spacing: 5) {
                             Text(item.name).frame(maxWidth: .infinity, alignment: .leading)
                             Text(item.formattedSize).frame(width: 60, alignment: .trailing).font(.caption).foregroundColor(.secondary)
-                            Text(item.formattedDate).frame(width: 90, alignment: .trailing).font(.caption).foregroundColor(.secondary)
+                            Text(item.formattedDate).frame(width: 70, alignment: .trailing).font(.caption).foregroundColor(.secondary)
                         }
                         .tag(item.url)
                     }
@@ -57,24 +55,12 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(appState.selectedFileURL == nil || appState.isLoading)
-                    
-                    Button(action: { appState.cameraAction = .rotate360 }) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(appState.rawPoints.isEmpty)
-                    
-                    Button(action: { recordVideo() }) {
-                        Image(systemName: appState.isRecording ? "stop.circle" : "record.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(appState.rawPoints.isEmpty || appState.isRecording)
-                    .foregroundColor(appState.isRecording ? .red : .primary)
                 }
                 
                 if appState.isLoading { ProgressView(value: appState.progress, total: 100.0) }
                 
                 DisclosureGroup("Camera Views") { cameraViewsContent }
+                DisclosureGroup("Export") { exportContent }
                 DisclosureGroup("Materials") { materialsContent }
                 DisclosureGroup("Parameters") { parametersContent }
             }
@@ -84,12 +70,10 @@ struct ContentView: View {
     
     private func sortButton(title: String, order: SortOrder) -> some View {
         Button(action: { appState.sortOrder = order }) {
-            Text(title)
-                .font(.caption)
+            Text(title).font(.caption)
                 .fontWeight(appState.sortOrder == order ? .bold : .regular)
                 .foregroundColor(appState.sortOrder == order ? .blue : .secondary)
-        }
-        .buttonStyle(.plain)
+        }.buttonStyle(.plain)
     }
     
     private var cameraViewsContent: some View {
@@ -101,6 +85,34 @@ struct ContentView: View {
                 CamButton(title: "ISO 1", action: .iso1); CamButton(title: "ISO 2", action: .iso2)
                 CamButton(title: "ISO 3", action: .iso3); CamButton(title: "ISO 4", action: .iso4)
             }
+            Button("Rotate 360°") { appState.cameraAction = .rotate360 }
+                .buttonStyle(.bordered).frame(maxWidth: .infinity)
+            Toggle("Show Axis & Grid", isOn: $appState.showAxis)
+                            .toggleStyle(.checkbox)
+        }
+    }
+    
+    // Блок экспорта
+    private var exportContent: some View {
+        VStack(spacing: 10) {
+            Button(action: { recordVideo() }) {
+                HStack {
+                    Image(systemName: appState.isRecording ? "stop.circle" : "video")
+                    Text(appState.isRecording ? "Recording..." : "Record 360° Video (MP4)")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(appState.rawPoints.isEmpty || appState.isRecording)
+            .foregroundColor(appState.isRecording ? .red : .primary)
+            
+            Button(action: { savePhotos() }) {
+                HStack {
+                    Image(systemName: "photo.on.rectangle")
+                    Text("Save 10 View Photos")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(appState.rawPoints.isEmpty)
         }
     }
     
@@ -190,83 +202,194 @@ struct ContentView: View {
         if panel.runModal() == .OK, let url = panel.url {
             appState.currentDirectory = url
             appState.log("Selected directory: \(url.path)")
-            do {
-                let urls = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
-                var items: [FileItem] = []
-                for fileURL in urls {
-                    let ext = fileURL.pathExtension.lowercased()
-                    guard ext == "gcode" || ext == "nc" || ext == "ngc" else { continue }
-                    let resources = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-                    let item = FileItem(
-                        url: fileURL,
-                        name: fileURL.lastPathComponent,
-                        size: Int64(resources.fileSize ?? 0),
-                        date: resources.contentModificationDate ?? Date.distantPast
-                    )
-                    items.append(item)
-                }
-                DispatchQueue.main.async {
-                    appState.fileItems = items
-                    appState.selectedFileURL = nil
-                    appState.log("Found \(items.count) GCode files.")
-                }
-            } catch { appState.log("Error reading directory: \(error)") }
+            appState.loadFilesFromDirectory(url)
         }
     }
     
-    private func recordVideo() {
-        appState.isRecording = true
-        appState.cameraAction = .rotate360
-        appState.log("Starting 360° video recording...")
+    // MARK: - Save Photos
+    private func savePhotos() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.prompt = "Choose folder to save photos"
         
-        // Даем время анимации начаться
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            guard let sceneView = (NSApp.windows.first?.contentView?.subviews.first(where: { $0 is SCNView })) as? SCNView else {
-                appState.isRecording = false; return
-            }
+        if panel.runModal() == .OK, let dir = panel.url {
+            guard let sceneView = getSceneView() else { return }
             
-            DispatchQueue.global(qos: .userInitiated).async {
-                var frames: [CGImage] = []
-                let totalFrames = 90 // 3 секунды при 30 fps
+            let views: [(String, CameraAction)] = [
+                ("Front", .front), ("Back", .back), ("Left", .left), ("Right", .right),
+                ("Top", .top), ("Bottom", .bottom),
+                ("ISO_1", .iso1), ("ISO_2", .iso2), ("ISO_3", .iso3), ("ISO_4", .iso4)
+            ]
+            
+            appState.log("Saving photos to \(dir.path)...")
+            
+            for (name, action) in views {
+                // Принудительно меняем вид
+                appState.cameraAction = action
+                // Ждем обновления View (RunLoop)
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+                
+                if let imgRep = sceneView.snapshot().tiffRepresentation,
+                   let img = NSImage(data: imgRep) {
+                    let fileURL = dir.appendingPathComponent("\(name).png")
+                    if let tiffData = img.tiffRepresentation,
+                       let bitmap = NSBitmapImageRep(data: tiffData),
+                       let pngData = bitmap.representation(using: .png, properties: [:]) {
+                        try? pngData.write(to: fileURL)
+                    }
+                }
+            }
+            appState.log("Photos saved successfully!")
+        }
+    }
+    
+    // MARK: - Record Video (MP4)
+    private func recordVideo() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "mp4")!]
+        panel.nameFieldStringValue = "GCode_Rotation.mp4"
+        panel.prompt = "Save Video"
+        
+        guard panel.runModal() == .OK, let outputURL = panel.url else { return }
+        
+        guard let sceneView = getSceneView() else {
+            appState.log("Error: Could not find 3D View for recording.")
+            return
+        }
+        
+        appState.isRecording = true
+        appState.log("Preparing video recording...")
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let width = 1080
+            let height = 1920
+            let fps: Int32 = 30
+            let duration: Double = 3.0
+            let totalFrames = Int(Double(fps) * duration)
+            
+            do {
+                let videoWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+                let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                    AVVideoCodecKey: AVVideoCodecType.h264,
+                    AVVideoWidthKey: width,
+                    AVVideoHeightKey: height
+                ])
+                let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: writerInput, sourcePixelBufferAttributes: [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                    kCVPixelBufferWidthKey as String: width,
+                    kCVPixelBufferHeightKey as String: height
+                ])
+                
+                videoWriter.add(writerInput)
+                videoWriter.startWriting()
+                videoWriter.startSession(atSourceTime: CMTime.zero)
+                
+                // 1. Создаем буфер один раз
+                var pixelBuffer: CVPixelBuffer?
+                let bufferAttrs: [String: Any] = [
+                    kCVPixelBufferCGImageCompatibilityKey as String: true,
+                    kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+                ]
+                CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32ARGB, bufferAttrs as CFDictionary, &pixelBuffer)
+                
+                guard let buffer = pixelBuffer else {
+                    DispatchQueue.main.async { self.appState.isRecording = false }
+                    return
+                }
+                
+                // 2. Подготавливаем инструменты для рендеринга
+                let ciContext = CIContext()
+                let colorSpace = CGColorSpaceCreateDeviceRGB()
+                let targetBounds = CGRect(x: 0, y: 0, width: width, height: height)
+                
+                // Черный фон для(letterbox), если пропорции окна не 16:9
+                let blackBackground = CIImage(color: CIColor.black).cropped(to: targetBounds)
+                
+                var frameCount: Int64 = 0
                 
                 for i in 0..<totalFrames {
-                    let time = TimeInterval(i) / 30.0
+                    let time = Double(i) / Double(fps)
+                    let angle = Float((time / duration) * 2 * .pi)
+                    
+                    var cgImg: CGImage?
                     DispatchQueue.main.sync {
-                        sceneView.scene?.rootNode.enumerateChildNodes { node, _ in
-                            if node.name == "gcode" { node.removeAllActions() } // Останавливаем реальную анимацию
-                        }
-                        // Вручную крутим на нужный угол
                         if let rootNode = sceneView.scene?.rootNode.childNode(withName: "gcode", recursively: false) {
-                            rootNode.eulerAngles.y = CGFloat(Float((time / 3.0) * 2 * .pi))
+                            rootNode.removeAllActions()
+                            rootNode.eulerAngles.y = CGFloat(angle)
                         }
-                        sceneView.frame = CGRect(x: 0, y: 0, width: 1920, height: 1080) // Фиксированный размер рендера
-                        if let img = sceneView.snapshot().cgImage(forProposedRect: nil, context: nil, hints: nil) { frames.append(img) }
+                        let nsImage = sceneView.snapshot()
+                        cgImg = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                    }
+                    
+                    if let image = cgImg {
+                        let ciImage = CIImage(cgImage: image)
+                        let extent = ciImage.extent
                         
+                        // 3. Вычисляем масштаб для Aspect Fit (вписать целиком без обрезки)
+                        let scaleX = CGFloat(width) / extent.width
+                        let scaleY = CGFloat(height) / extent.height
+                        let scale = min(scaleX, scaleY)
+                        
+                        // Масштабируем и центрируем картинку
+                        var transformedImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                        let scaledExtent = transformedImage.extent
+                        let originX = (CGFloat(width) - scaledExtent.width) / 2.0
+                        let originY = (CGFloat(height) - scaledExtent.height) / 2.0
+                        transformedImage = transformedImage.transformed(by: CGAffineTransform(translationX: originX, y: originY))
+                        
+                        while !writerInput.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.01) }
+                        let presentationTime = CMTimeMake(value: frameCount, timescale: fps)
+                        
+                        // 4. Сначала рисуем черный фон, затем поверх нашу модель
+                        ciContext.render(blackBackground, to: buffer, bounds: targetBounds, colorSpace: colorSpace)
+                        ciContext.render(transformedImage, to: buffer, bounds: targetBounds, colorSpace: colorSpace)
+                        
+                        adaptor.append(buffer, withPresentationTime: presentationTime)
+                    }
+                    frameCount += 1
+                }
+                
+                writerInput.markAsFinished()
+                videoWriter.finishWriting {
+                    DispatchQueue.main.async {
+                        self.appState.isRecording = false
+                        if videoWriter.status == .completed {
+                            self.appState.log("Video saved successfully to \(outputURL.path)")
+                        } else {
+                            self.appState.log("Video error: \(videoWriter.error?.localizedDescription ?? "Unknown")")
+                        }
                     }
                 }
                 
-                // Сохраняем GIF на рабочий стол
+            } catch {
                 DispatchQueue.main.async {
-                    saveFramesAsGIF(frames: frames)
-                    appState.isRecording = false
-                    appState.log("Video saved to Desktop as GCode_Rotation.gif")
+                    self.appState.isRecording = false
+                    self.appState.log("Video error: \(error.localizedDescription)")
                 }
             }
         }
     }
-    
-    private func saveFramesAsGIF(frames: [CGImage]) {
-        guard !frames.isEmpty else { return }
-        let desktopURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
-        let fileURL = desktopURL.appendingPathComponent("GCode_Rotation.gif")
+
+    // Функция getSceneView больше не нужна, но если она осталась, замените её тело:
+    private func getSceneView() -> SCNView? {
+        // Надежный поиск SCNView через NSView иерархию окна
+        guard let window = NSApp.windows.first,
+              let contentView = window.contentView else { return nil }
         
-        let destination = CGImageDestinationCreateWithURL(fileURL as CFURL, kUTTypeGIF, frames.count, nil)!
-        let properties = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0/30.0]] as CFDictionary
-        
-        for frame in frames {
-            CGImageDestinationAddImage(destination, frame, properties)
+        return findSCNView(in: contentView)
+    }
+
+    // Рекурсивный поиск нужного нам SCNView внутри иерархии AppKit
+    private func findSCNView(in view: NSView) -> SCNView? {
+        if let scnView = view as? SCNView {
+            return scnView
         }
-        CGImageDestinationFinalize(destination)
+        for subview in view.subviews {
+            if let found = findSCNView(in: subview) {
+                return found
+            }
+        }
+        return nil
     }
 }
 

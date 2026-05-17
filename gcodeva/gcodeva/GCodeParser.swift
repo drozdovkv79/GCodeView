@@ -2,155 +2,216 @@ import Foundation
 import simd
 
 class GCodeParser {
-    static func parse(file: URL, progress: @escaping (Double) -> Void) -> (points: [GCodePoint], stats: GCodeStats) {
-        guard let content = try? String(contentsOf: file) else { return ([], GCodeStats()) }
-        let lines = content.components(separatedBy: .newlines)
-        
+    
+    private struct ParserState {
         var points: [GCodePoint] = []
+        var stats = GCodeStats()
         var currentLayer = 0
         var lastZ: Float = 0
-        let layerThreshold: Float = 1.0
-        
         var x: Float = 0, y: Float = 0, z: Float = 0, e: Float = 0, f: Float = 0
         
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty || trimmed.hasPrefix(";") { continue }
-            if trimmed.contains("M82") || trimmed.contains("M83") { continue }
-            
-            if trimmed.hasPrefix("G0 ") || trimmed.hasPrefix("G1 ") {
-                let isG1 = trimmed.hasPrefix("G1 ")
-                
-                if let match = extractValue(from: trimmed, prefix: "X") { x = match }
-                if let match = extractValue(from: trimmed, prefix: "Y") { y = match }
-                if let match = extractValue(from: trimmed, prefix: "Z") {
-                    z = match
-                    if abs(z - lastZ) > layerThreshold {
-                        currentLayer += 1
-                        lastZ = z
-                    }
-                }
-                if let match = extractValue(from: trimmed, prefix: "E") { e = match }
-                if let match = extractValue(from: trimmed, prefix: "F") { f = match }
-                
-                let hasExtrusion = isG1 && e > 0
-                points.append(GCodePoint(x: x, y: y, z: z, e: e, feedRate: f, layer: currentLayer, isExtrusion: hasExtrusion))
-            }
-            
-            if index % 1000 == 0 { progress(Double(index) / Double(lines.count) * 50.0) }
+        var extMinX: Float = .greatestFiniteMagnitude, extMaxX: Float = -.greatestFiniteMagnitude
+        var extMinY: Float = .greatestFiniteMagnitude, extMaxY: Float = -.greatestFiniteMagnitude
+        var extMinZ: Float = .greatestFiniteMagnitude, extMaxZ: Float = -.greatestFiniteMagnitude
+        var totalE: Float = 0
+        var maxSpeed: Float = 0
+        
+        var prevPoint: GCodePoint? = nil
+        var extPathLength: Float = 0
+        var travPathLength: Float = 0
+        var printTime: Float = 0
+    }
+    
+    static func parse(file: URL, progress: @escaping (Double) -> Void) -> (points: [GCodePoint], stats: GCodeStats) {
+        var state = ParserState()
+        state.points.reserveCapacity(1_000_000)
+        
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard let data = try? Data(contentsOf: file, options: .alwaysMapped) else {
+            return (state.points, state.stats)
         }
         
-        let stats = calculateStats(points: points)
-        progress(100.0)
-        return (points, stats)
-    }
-    
-    private static func extractValue(from line: String, prefix: String) -> Float? {
-        guard let range = line.range(of: "\(prefix)[0-9\\-\\.]+", options: .regularExpression) else { return nil }
-        let numStr = line[range].dropFirst(prefix.count)
-        return Float(numStr)
-    }
-    
-    private static func calculateStats(points: [GCodePoint]) -> GCodeStats {
-        var stats = GCodeStats()
-        stats.totalPoints = points.count
-        let extPts = points.filter { $0.isExtrusion }
-        let travPts = points.filter { !$0.isExtrusion }
+        let readTime = CFAbsoluteTimeGetCurrent()
         
-        stats.extrusionPoints = extPts.count
-        stats.travelPoints = travPts.count
+        let totalBytes = data.count
+        var lastProgressByte = 0
+        let progressStep = totalBytes / 20
         
-        if extPts.isEmpty { return stats }
+        data.withUnsafeBytes { rawBufferPointer in
+            let bytes = rawBufferPointer.bindMemory(to: UInt8.self)
+            var lineStart = 0
+            
+            for i in 0..<totalBytes {
+                let byte = bytes[i]
+                if byte == 10 || byte == 13 {
+                    if i > lineStart {
+                        processLine(bytes: bytes, start: lineStart, end: i, state: &state)
+                    }
+                    lineStart = i + 1
+                    
+                    if i - lastProgressByte > progressStep {
+                        lastProgressByte = i
+                        progress(Double(i) / Double(totalBytes) * 50.0)
+                    }
+                }
+            }
+            if totalBytes > lineStart {
+                processLine(bytes: bytes, start: lineStart, end: totalBytes, state: &state)
+            }
+        }
         
-        let xs = extPts.map { $0.x }
-        let ys = extPts.map { $0.y }
-        let zs = extPts.map { $0.z }
+        let parseTime = CFAbsoluteTimeGetCurrent()
         
-        stats.width = xs.max()! - xs.min()!
-        stats.length = ys.max()! - ys.min()!
-        stats.height = zs.max()! - zs.min()!
-        stats.numLayers = Set(extPts.map { $0.layer }).count
-        stats.totalMaterial = extPts.map { $0.e }.reduce(0, +)
+        if state.stats.extrusionPoints > 0 {
+            state.stats.width = state.extMaxX - state.extMinX
+            state.stats.length = state.extMaxY - state.extMinY
+            state.stats.height = state.extMaxZ - state.extMinZ
+            state.stats.maxZ = state.extMaxZ
+            state.stats.centerOfMassX = state.extMinX + state.stats.width / 2.0
+            state.stats.centerOfMassY = state.extMinY + state.stats.length / 2.0
+        } else {
+            state.stats.width = 0; state.stats.length = 0; state.stats.height = 0; state.stats.maxZ = 0
+        }
+        
+        state.stats.numLayers = state.currentLayer + 1
+        state.stats.totalMaterial = state.totalE
         
         let filamentDiameter: Float = 1.75
         let filamentArea = Float.pi * (filamentDiameter / 2) * (filamentDiameter / 2)
-        stats.volume = stats.totalMaterial * filamentArea
+        state.stats.volume = state.totalE * filamentArea
         
-        stats.maxZ = zs.max()!
-        stats.maxSpeed = extPts.map { $0.feedRate }.max()!
+        state.stats.maxSpeed = state.maxSpeed
+        state.stats.extrusionPathLength = state.extPathLength
+        state.stats.travelPathLength = state.travPathLength
+        state.stats.estimatedPrintTimeMin = state.printTime / 60.0
+        state.stats.averageFlowRate = state.extPathLength > 0 ? (state.stats.volume / state.extPathLength) : 0
+        state.stats.boundingBoxVolume = state.stats.width * state.stats.length * state.stats.height
+        state.stats.xyFootprintArea = state.stats.width * state.stats.length
+        state.stats.modelCompactness = state.stats.boundingBoxVolume > 0 ? (state.stats.volume / state.stats.boundingBoxVolume) : 0
         
-        // --- РАСШИРЕННАЯ АНАЛИТИКА ---
+        progress(100.0)
         
-        // 1 & 2. Длины путей
-        var extPathLength: Float = 0
-        var travPathLength: Float = 0
+        let endTime = CFAbsoluteTimeGetCurrent()
+        print("⏱ File Read: \(String(format: "%.2f", (readTime - startTime) * 1000)) ms")
+        print("⏱ Parsing: \(String(format: "%.2f", (parseTime - readTime) * 1000)) ms")
+        print("⏱ Stats Calc: \(String(format: "%.2f", (endTime - parseTime) * 1000)) ms")
         
-        // 3. Время (в минутах)
-        var printTime: Float = 0
+        return (state.points, state.stats)
+    }
+    
+    @inline(__always)
+    private static func processLine(bytes: UnsafeBufferPointer<UInt8>, start: Int, end: Int, state: inout ParserState) {
+        guard end - start > 3 else { return }
+        var idx = start
         
-        // 7 & 8. Центр масс (среднее по экструзии)
-        stats.centerOfMassX = xs.reduce(0, +) / Float(xs.count)
-        stats.centerOfMassY = ys.reduce(0, +) / Float(ys.count)
+        while idx < end && bytes[idx] == 32 { idx += 1 }
+        guard idx < end && bytes[idx] == 71 else { return }
+        idx += 1
+        guard idx < end && (bytes[idx] == 48 || bytes[idx] == 49) else { return }
+        let isG1 = bytes[idx] == 49
+        idx += 1
+        guard idx < end && (bytes[idx] == 32 || bytes[idx] == 9) else { return }
         
-        // 9. Острые углы
-        var sharpCorners = 0
+        var posX: Float? = nil, posY: Float? = nil, posZ: Float? = nil, posE: Float? = nil, posF: Float? = nil
         
-        // Вспомогательные переменные для расчетов
-        var prevExt: GCodePoint? = nil
-        var prevPrevExt: GCodePoint? = nil
-        var prevPoint: GCodePoint? = nil
-        
-        for pt in points {
-            if let prev = prevPoint {
-                let dx = pt.x - prev.x
-                let dy = pt.y - prev.y
-                let dz = pt.z - prev.z
-                let dist = sqrt(dx*dx + dy*dy + dz*dz)
-                let speedMmPerMin = pt.feedRate > 0 ? pt.feedRate : 1000.0 // дефолтная скорость для G0
-                
-                if pt.isExtrusion {
-                    extPathLength += dist
-                    printTime += (dist / speedMmPerMin) * 60.0 // в секундах
-                    
-                    // Проверка острых углов
-                    if let prev2 = prevPrevExt, prev2.layer == pt.layer {
-                        let v1 = simd_float2(prev.x - prev2.x, prev.y - prev2.y)
-                        let v2 = simd_float2(pt.x - prev.x, pt.y - prev.y)
-                        let l1 = simd_length(v1), l2 = simd_length(v2)
-                        if l1 > 0.01 && l2 > 0.01 {
-                            let dot = simd_dot(v1/l1, v2/l2)
-                            let angle = acos(min(max(dot, -1.0), 1.0)) * (180.0 / Float.pi)
-                            if angle < 120.0 { sharpCorners += 1 }
-                        }
+        while idx < end {
+            let c = bytes[idx]
+            if c == 59 { return }
+            
+            if c == 88 || c == 89 || c == 90 || c == 69 || c == 70 {
+                let param = c
+                idx += 1
+                if let val = parseFloat(bytes: bytes, start: idx, end: end) {
+                    switch param {
+                    case 88: posX = val
+                    case 89: posY = val
+                    case 90: posZ = val
+                    case 69: posE = val
+                    case 70: posF = val
+                    default: break
                     }
-                    prevPrevExt = prevExt
-                    prevExt = pt
-                    
-                } else {
-                    travPathLength += dist
-                    printTime += (dist / speedMmPerMin) * 60.0
                 }
             }
-            prevPoint = pt
+            idx += 1
         }
         
-        stats.extrusionPathLength = extPathLength
-        stats.travelPathLength = travPathLength
-        stats.estimatedPrintTimeMin = printTime / 60.0 // переводим в минуты
-        stats.sharpCornersCount = sharpCorners
+        if let v = posX { state.x = v }
+        if let v = posY { state.y = v }
+        if let v = posZ {
+            state.z = v
+            if abs(state.z - state.lastZ) > 1.0 {
+                state.currentLayer += 1
+                state.lastZ = state.z
+            }
+        }
+        if let v = posE { state.e = v }
+        if let v = posF { state.f = v }
         
-        // 4. Средний расход на мм (мм³/мм)
-        stats.averageFlowRate = extPathLength > 0 ? (stats.volume / extPathLength) : 0
+        let hasExtrusion = isG1 && state.e > 0
+        let point = GCodePoint(x: state.x, y: state.y, z: state.z, e: state.e, feedRate: state.f, layer: state.currentLayer, isExtrusion: hasExtrusion)
         
-        // 5. Объем BoundingBox
-        stats.boundingBoxVolume = stats.width * stats.length * stats.height
+        state.points.append(point)
+        state.stats.totalPoints += 1
         
-        // 6. Площадь опорной площадки
-        stats.xyFootprintArea = stats.width * stats.length
+        if hasExtrusion {
+            state.stats.extrusionPoints += 1
+            if state.x < state.extMinX { state.extMinX = state.x }; if state.x > state.extMaxX { state.extMaxX = state.x }
+            if state.y < state.extMinY { state.extMinY = state.y }; if state.y > state.extMaxY { state.extMaxY = state.y }
+            if state.z < state.extMinZ { state.extMinZ = state.z }; if state.z > state.extMaxZ { state.extMaxZ = state.z }
+            state.totalE += state.e
+            if state.f > state.maxSpeed { state.maxSpeed = state.f }
+        } else {
+            state.stats.travelPoints += 1
+        }
         
-        // 10. Компактность
-        stats.modelCompactness = stats.boundingBoxVolume > 0 ? (stats.volume / stats.boundingBoxVolume) : 0
+        if let prev = state.prevPoint {
+            let dx = point.x - prev.x
+            let dy = point.y - prev.y
+            let dz = point.z - prev.z
+            let dist = sqrt(dx*dx + dy*dy + dz*dz)
+            let speed = point.feedRate > 0 ? point.feedRate : 1000.0
+            
+            if point.isExtrusion {
+                state.extPathLength += dist
+                state.printTime += (dist / speed) * 60.0
+            } else {
+                state.travPathLength += dist
+                state.printTime += (dist / speed) * 60.0
+            }
+        }
+        state.prevPoint = point
+    }
+    
+    @inline(__always)
+    private static func parseFloat(bytes: UnsafeBufferPointer<UInt8>, start: Int, end: Int) -> Float? {
+        var i = start
+        var val: Float = 0
+        var sign: Float = 1
+        var hasDigits = false
         
-        return stats
+        if i < end && bytes[i] == 45 { sign = -1; i += 1 }
+        while i < end {
+            let c = bytes[i]
+            if c >= 48 && c <= 57 {
+                val = val * 10 + Float(c - 48)
+                hasDigits = true
+                i += 1
+            } else { break }
+        }
+        if i < end && bytes[i] == 46 {
+            i += 1
+            var dec: Float = 0.1
+            while i < end {
+                let c = bytes[i]
+                if c >= 48 && c <= 57 {
+                    val += Float(c - 48) * dec
+                    dec *= 0.1
+                    hasDigits = true
+                    i += 1
+                } else { break }
+            }
+        }
+        return hasDigits ? sign * val : nil
     }
 }
