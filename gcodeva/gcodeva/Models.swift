@@ -47,6 +47,8 @@ class AppState: ObservableObject {
     @Published var tubeDiameter: Float = 4.0
     @Published var modelColor: Color = Color(hex: "#e9e5ce")!
     @Published var renderTrigger: Int = 0
+    @Published var tempCollinearAngle: Float = 5.0
+    @Published var collinearAngle: Float = 5.0
     
     @Published var cameraAction: CameraAction = .none
     @Published var selectedMaterial: MaterialPreset = .matte
@@ -111,7 +113,11 @@ class AppState: ObservableObject {
                 self.rawPoints = points
                 self.tubeDiameter = self.tempTubeDiameter
                 self.modelColor = self.tempModelColor
-                
+                // Сразу строим 3D сцену
+                self.renderTrigger += 1
+                DispatchQueue.global(qos: .userInitiated).async {
+                    self.calculateAnalytics()
+                }
                 DispatchQueue.global(qos: .userInitiated).async {
                     self.processGeometry()
                 }
@@ -210,7 +216,7 @@ class AppState: ObservableObject {
             var originalCount = 0, optimizedCount = 0
             for (_, var points) in layersOpt {
                 originalCount += points.count
-                removeCollinearPoints(from: &points, angleThresholdDeg: 5.0)
+                removeCollinearPoints(from: &points, angleThresholdDeg: self.collinearAngle)
                 optimizedCount += points.count
             }
             stats.originalExtrusionPoints = originalCount
@@ -249,7 +255,7 @@ class AppState: ObservableObject {
         
         for (layerIndex, var points) in layers.sorted(by: { $0.key < $1.key }) {
             if points.count < 2 { continue }
-            removeCollinearPoints(from: &points, angleThresholdDeg: 5.0)
+            removeCollinearPoints(from: &points, angleThresholdDeg: collinearAngle)
             if points.count < 2 { continue }
             
             if let tubeData = createTubeBuffers(for: points, radius: radius, segments: segments) {
@@ -269,6 +275,12 @@ class AppState: ObservableObject {
             
             self.renderTrigger += 1
         }
+    }
+    
+    func applyCollinearAngle() {
+        collinearAngle = tempCollinearAngle
+        log("Collinear angle changed to \(String(format: "%.1f", collinearAngle))°. Reprocessing geometry...")
+        DispatchQueue.global(qos: .userInitiated).async { self.processGeometry() }
     }
     
     func applyDiameter() {
