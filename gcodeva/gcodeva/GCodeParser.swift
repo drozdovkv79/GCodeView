@@ -168,37 +168,69 @@ class GCodeParser {
     }
     
     @inline(__always)
-    private static func parseFloat(start: UnsafePointer<UInt8>, end: UnsafePointer<UInt8>) -> (value: Float, nextPtr: UnsafePointer<UInt8>)? {
+    private static func parseFloat(
+        start: UnsafePointer<UInt8>,
+        end: UnsafePointer<UInt8>
+    ) -> (value: Float, nextPtr: UnsafePointer<UInt8>)? {
+        
         var p = start
-        var val: Float = 0
+        guard p < end else { return nil }
+        
+        // Sign
         var sign: Float = 1
+        if p.pointee == 45 {  // '-'
+            sign = -1
+            p = p + 1
+            guard p < end else { return nil }
+        }
+        
+        // Integer part (Int32 arithmetic faster than Float)
+        var intPart: Int32 = 0
         var hasDigits = false
         
-        if p < end && p.pointee == 45 { sign = -1; p = p + 1 } // '-'
         while p < end {
             let c = p.pointee
-            if c >= 48 && c <= 57 { // '0'-'9'
-                val = val * 10 + Float(c - 48)
+            if c >= 48 && c <= 57 {  // '0'..'9'
+                intPart = intPart &* 10 &+ Int32(c &- 48)  // unchecked ops
                 hasDigits = true
                 p = p + 1
-            } else { break }
-        }
-        if p < end && p.pointee == 46 { // '.'
-            p = p + 1
-            var dec: Float = 0.1
-            while p < end {
-                let c = p.pointee
-                if c >= 48 && c <= 57 {
-                    val += Float(c - 48) * dec
-                    dec *= 0.1
-                    hasDigits = true
-                    p = p + 1
-                } else { break }
+            } else {
+                break
             }
         }
-        if hasDigits {
-            return (sign * val, p) // Возвращаем число и указатель на следующий за числом символ
+        
+        var result = Float(intPart)
+        
+        // Decimal part: accumulate as integer, multiply once
+        if p < end && p.pointee == 46 {  // '.'
+            p = p + 1
+            var decPart: Int32 = 0
+            var decCount = 0
+            
+            while p < end && decCount < 9 {  // 9 digits = safe for Int32
+                let c = p.pointee
+                if c >= 48 && c <= 57 {
+                    decPart = decPart &* 10 &+ Int32(c &- 48)
+                    decCount += 1
+                    p = p + 1
+                } else {
+                    break
+                }
+            }
+            
+            if decCount > 0 {
+                result += Float(decPart) * pow10Divisors[decCount]
+            }
         }
-        return nil
+        
+        guard hasDigits else { return nil }
+        return (sign * result, p)
     }
+
+    // Precomputed: 1/10^n for n=0..9
+    private static let pow10Divisors: [Float] = [
+        0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9
+    ]
+
+
 }
