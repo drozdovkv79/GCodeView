@@ -54,7 +54,8 @@ except ImportError:
 PANEL_WIDTH = 1200  # мм по оси X
 PANEL_HEIGHT = 3100  # мм по оси Z
 PANEL_DEPTH = 40  # мм по оси Y
-WORKING_THRESHOLD = 15  # Рабочая зона: Y < 15 мм
+WORKING_THRESHOLD_MIN = 0  # Рабочая зона: Y < 15 мм
+WORKING_THRESHOLD_MAX = 60  # Рабочая зона: Y < 15 мм
 
 # ИЗМЕНЕНО: теперь по умолчанию изображение занимает ВСЮ ширину и 90% высоты
 DEFAULT_HM_WIDTH_RATIO = 0.9
@@ -536,9 +537,9 @@ class GCodeProcessor(QThread):
                     x = float(xm.group(1)) if xm else 0
                     y = float(ym.group(1)) if ym else 0
                     z = float(zm.group(1)) if zm else 0
-
-                    if y < WORKING_THRESHOLD:
-                        y += self.get_offset(x, z, y)
+                    # поменял Y на X (sonyk)
+                    if WORKING_THRESHOLD_MIN < x < WORKING_THRESHOLD_MAX:
+                        x += self.get_offset(-y, z, x)
 
                     parts = ["G1"]
                     if xm:
@@ -598,7 +599,7 @@ class MainWindow(QMainWindow):
 
         # Подзаголовок
         subtitle = QLabel(
-            f"Панель: {PANEL_WIDTH}×{PANEL_HEIGHT} мм | Рабочая зона: Y < {WORKING_THRESHOLD} мм"
+            f"Панель: {PANEL_WIDTH}×{PANEL_HEIGHT} мм | Рабочая зона: Y < {WORKING_THRESHOLD_MAX} мм"
         )
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet("color: #555; font-size: 12px;")
