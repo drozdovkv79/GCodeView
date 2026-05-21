@@ -175,10 +175,10 @@ struct ContentView: View {
             HStack {
                 Text("Video W:")
                 TextField("Width", value: $appState.videoWidth, format: .number)
-                    .textFieldStyle(.roundedBorder).frame(width: 60)
+                    .textFieldStyle(.roundedBorder).frame(width: 70)
                 Text("H:")
                 TextField("Height", value: $appState.videoHeight, format: .number)
-                    .textFieldStyle(.roundedBorder).frame(width: 60)
+                    .textFieldStyle(.roundedBorder).frame(width: 70)
             }
             
             Button(action: { recordVideo() }) {
@@ -261,8 +261,12 @@ struct ContentView: View {
         panel.prompt = "Save Video"
         
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
+        // Удаляем файл, если он уже существует, иначе AVAssetWriter выдаст ошибку
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
         
-        guard let sceneView = getSceneView() else {
+        guard let sceneView = appState.sceneView else {
             appState.log("Error: Could not find 3D View for recording.")
             return
         }
@@ -271,45 +275,62 @@ struct ContentView: View {
         appState.log("Preparing video recording...")
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let width = appState.videoWidth
-            let height = appState.videoHeight
+            var width = max(2, appState.videoWidth)
+            var height = max(2, appState.videoHeight)
+            if width % 2 != 0 { width += 1 }
+            if height % 2 != 0 { height += 1 }
+            
             let fps: Int32 = 30
             let duration: Double = 3.0
             let totalFrames = Int(Double(fps) * duration)
             
             do {
                 let videoWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
-                let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                let outputSettings: [String: Any] = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
-                    AVVideoWidthKey: width,
-                    AVVideoHeightKey: height
-                ])
-                let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: writerInput, sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-                    kCVPixelBufferWidthKey as String: width,
-                    kCVPixelBufferHeightKey as String: height
-                ])
+                    AVVideoWidthKey: NSNumber(value: width),
+                    AVVideoHeightKey: NSNumber(value: height)
+                ]
+                let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
+                writerInput.expectsMediaDataInRealTime = false
+                
+                let sourcePixelBufferAttributes: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: NSNumber(value: kCVPixelFormatType_32ARGB),
+                    kCVPixelBufferWidthKey as String: NSNumber(value: width),
+                    kCVPixelBufferHeightKey as String: NSNumber(value: height),
+                    kCVPixelBufferCGImageCompatibilityKey as String: kCFBooleanTrue!,
+                    kCVPixelBufferCGBitmapContextCompatibilityKey as String: kCFBooleanTrue!
+                ]
+                
+                let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+                    assetWriterInput: writerInput,
+                    sourcePixelBufferAttributes: sourcePixelBufferAttributes
+                )
                 
                 videoWriter.add(writerInput)
                 videoWriter.startWriting()
+                
+                guard videoWriter.status == .writing else {
+                    DispatchQueue.main.async {
+                        self.appState.isRecording = false
+                        self.appState.log("Video Writer Error: \(videoWriter.error?.localizedDescription ?? "Failed to start")")
+                    }
+                    return
+                }
+                
                 videoWriter.startSession(atSourceTime: CMTime.zero)
                 
-                var pixelBuffer: CVPixelBuffer?
-                let bufferAttrs: [String: Any] = [
-                    kCVPixelBufferCGImageCompatibilityKey as String: true,
-                    kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
-                ]
-                CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32ARGB, bufferAttrs as CFDictionary, &pixelBuffer)
-                
-                guard let buffer = pixelBuffer else {
-                    DispatchQueue.main.async { self.appState.isRecording = false }
+                guard let pixelBufferPool = adaptor.pixelBufferPool else {
+                    DispatchQueue.main.async {
+                        self.appState.isRecording = false
+                        self.appState.log("Video error: Pixel buffer pool unavailable.")
+                    }
                     return
                 }
                 
                 let ciContext = CIContext()
                 let colorSpace = CGColorSpaceCreateDeviceRGB()
-                let targetBounds = CGRect(x: 0, y: 0, width: width, height: height)
-                let blackBackground = CIImage(color: CIColor.black).cropped(to: targetBounds)
+                let videoBounds = CGRect(x: 0, y: 0, width: width, height: height)
                 
                 var frameCount: Int64 = 0
                 
@@ -317,24 +338,79 @@ struct ContentView: View {
                     let time = Double(i) / Double(fps)
                     let angle = Float((time / duration) * 2 * .pi)
                     
-                    var cgImg: CGImage?
+                    var snapshotCGImage: CGImage?
                     DispatchQueue.main.sync {
                         if let rootNode = sceneView.scene?.rootNode.childNode(withName: "gcode", recursively: false) {
                             rootNode.removeAllActions()
                             rootNode.eulerAngles.y = CGFloat(angle)
                         }
+                        
+                        // НАДЕЖНЫЙ СПОСОБ ПОЛУЧЕНИЯ RETINA ИЗОБРАЖЕНИЯ
                         let nsImage = sceneView.snapshot()
-                        cgImg = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                        if let tiffData = nsImage.tiffRepresentation,
+                           let bitmapRep = NSBitmapImageRep(data: tiffData),
+                           let cgImg = bitmapRep.cgImage {
+                            snapshotCGImage = cgImg
+                        } else {
+                            // Запасной вариант
+                            snapshotCGImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                        }
                     }
                     
-                    if let image = cgImg {
-                        let ciImage = CIImage(cgImage: image)
-                        
+                    if let image = snapshotCGImage {
                         while !writerInput.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.01) }
-                        let presentationTime = CMTimeMake(value: frameCount, timescale: fps)
                         
-                        ciContext.render(ciImage, to: buffer, bounds: targetBounds, colorSpace: colorSpace)
-                        adaptor.append(buffer, withPresentationTime: presentationTime)
+                        var pixelBuffer: CVPixelBuffer?
+                        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pixelBufferPool, &pixelBuffer)
+                        
+                        if let buffer = pixelBuffer {
+                            let presentationTime = CMTimeMake(value: frameCount, timescale: fps)
+                            
+                            var ciImage = CIImage(cgImage: image)
+                            let sourceExtent = ciImage.extent
+                            
+                            // ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ РАЗМЕРОВ (только для первого кадра)
+                            if i == 0 {
+                                let imageAspect = sourceExtent.width / sourceExtent.height
+                                let videoAspect = CGFloat(width) / CGFloat(height)
+                                let scaleX = CGFloat(width) / sourceExtent.width
+                                let scaleY = CGFloat(height) / sourceExtent.height
+                                let scale = min(scaleX, scaleY)
+                                
+                                appState.log("--- VIDEO RENDER INFO ---")
+                                appState.log("Target video size: \(width) x \(height) (Aspect: \(videoAspect))")
+                                appState.log("Snapshot size (Retina): \(Int(sourceExtent.width)) x \(Int(sourceExtent.height)) (Aspect: \(imageAspect))")
+                                appState.log("Scale factor to fit: \(scale)")
+                                appState.log("-------------------------")
+                            }
+                            
+                            /* 1. Переворот по вертикали (macOS -> Video координаты)
+                            let flipTransform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -sourceExtent.height)
+                            ciImage = ciImage.transformed(by: flipTransform)
+                            */
+                            // 2. Масштабирование с сохранением пропорций (Aspect Fit)
+                            let scaleX = CGFloat(width) / sourceExtent.width
+                            let scaleY = CGFloat(height) / sourceExtent.height
+                            let scale = min(scaleX, scaleY)
+                            ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                            
+                            // 3. Центрирование
+                            let scaledExtent = ciImage.extent
+                            let x = (CGFloat(width) - scaledExtent.width) / 2.0
+                            let y = (CGFloat(height) - scaledExtent.height) / 2.0
+                            ciImage = ciImage.transformed(by: CGAffineTransform(translationX: x, y: y))
+                            
+                            // 4. Создание черного фона и наложение модели поверх него
+                            let blackBackground = CIImage(color: CIColor.black).cropped(to: videoBounds)
+                            let finalImage = ciImage.composited(over: blackBackground)
+                            
+                            // 5. Рендеринг в буфер (всегда в полные videoBounds, обрезка исключена)
+                            CVPixelBufferLockBaseAddress(buffer, [])
+                            ciContext.render(finalImage, to: buffer, bounds: videoBounds, colorSpace: colorSpace)
+                            CVPixelBufferUnlockBaseAddress(buffer, [])
+                            
+                            adaptor.append(buffer, withPresentationTime: presentationTime)
+                        }
                     }
                     frameCount += 1
                 }

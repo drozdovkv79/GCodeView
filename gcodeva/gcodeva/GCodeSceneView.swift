@@ -22,6 +22,8 @@ struct GCodeSceneView: NSViewRepresentable {
         view.scene = SCNScene()
         setupCamera(in: view)
         context.coordinator.sceneView = view
+        appState.sceneView = view
+
         return view
     }
     
