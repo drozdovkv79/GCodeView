@@ -57,6 +57,7 @@ class AppState: ObservableObject {
     @Published var videoHeight: Int = 1080
     @Published var showAxis: Bool = true
     @Published var modelSize: simd_float3 = simd_float3(1,1,1)
+    @Published var simplifyEpsilon: Float = 0.0  // 0 – авто (радиус трубки)
     
     @Published var processedLayers: [LayerMesh] = []
     @Published var modelBoundingBox: (min: simd_float3, max: simd_float3)? = nil
@@ -236,49 +237,202 @@ class AppState: ObservableObject {
         }
     }
     
+    // MARK: - Optimized processGeometry
+
     private func processGeometry() {
         let startTime = CFAbsoluteTimeGetCurrent()
-        let extPts = rawPoints.filter { $0.isExtrusion }
+
+        // Параметры
         let radius = Float(tubeDiameter / 2.0)
+        let epsilon = simplifyEpsilon > 0 ? simplifyEpsilon : radius * 0.2
         let segments = 8
-        
+
+        // Предвычисление тригонометрии
+        let angles: [(cos: Float, sin: Float)] = (0..<segments).map { j in
+            let angle = Float(j) / Float(segments) * Float.pi * 2
+            return (cos(angle), sin(angle))
+        }
+
+        // 1. Однопроходная группировка с конвертацией координат
         var layers: [Int: [simd_float3]] = [:]
         var globalMin = simd_float3(repeating: Float.greatestFiniteMagnitude)
         var globalMax = simd_float3(repeating: -Float.greatestFiniteMagnitude)
-        
-        for point in extPts {
+
+        layers.reserveCapacity(1000) // примерная оценка
+        for point in rawPoints {
+            guard point.isExtrusion else { continue }
             let pos = simd_float3(Float(point.x), Float(point.z), -Float(point.y))
             layers[point.layer, default: []].append(pos)
             globalMin = simd_min(globalMin, pos)
             globalMax = simd_max(globalMax, pos)
         }
-        
-        var meshes: [LayerMesh] = []
-        meshes.reserveCapacity(layers.count)
-        
-        for (layerIndex, var points) in layers.sorted(by: { $0.key < $1.key }) {
-            if points.count < 2 { continue }
+
+        // 2. Параллельное построение мешей по слоям
+        let sortedLayers = layers.sorted { $0.key < $1.key }
+        let layerCount = sortedLayers.count
+
+        // Массив для результатов, инициализированный nil
+        var meshes: [LayerMesh?] = Array(repeating: nil, count: layerCount)
+
+        DispatchQueue.concurrentPerform(iterations: layerCount) { index in
+            var (layerID, points) = sortedLayers[index]
+
+            // Упрощение пути
+            //let simplified = simplifyPathRDP(points: points, epsilon: epsilon)
+            //guard simplified.count >= 2 else { return }
             removeCollinearPoints(from: &points, angleThresholdDeg: collinearAngle)
-            if points.count < 2 { continue }
-            
-            if let tubeData = createTubeBuffers(for: points, radius: radius, segments: segments) {
-                meshes.append(LayerMesh(id: layerIndex, vertices: tubeData.v, normals: tubeData.n, indices: tubeData.i))
+            // Генерация буферов
+            if let tubeData = createTubeBuffersOptimized(for: points,
+                                                         radius: radius,
+                                                         segments: segments,
+                                                         precomputedAngles: angles) {
+                let mesh = LayerMesh(id: layerID,
+                                     vertices: tubeData.v,
+                                     normals: tubeData.n,
+                                     indices: tubeData.i)
+                meshes[index] = mesh
             }
         }
-        
+
+        // Убираем nil
+        let finalMeshes = meshes.compactMap { $0 }
+
         let endTime = CFAbsoluteTimeGetCurrent()
-        
+        let elapsedMs = (endTime - startTime) * 1000
+
         DispatchQueue.main.async {
-            self.log("⏱ 3D Geometry prep: \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
-            
-            self.processedLayers = meshes
+            self.log("⏱ 3D Geometry prep (optimized): \(String(format: "%.2f", elapsedMs)) ms")
+            self.processedLayers = finalMeshes
             self.modelBoundingBox = (globalMin, globalMax)
             self.modelSize = globalMax - globalMin
             self.isLoading = false
-            
             self.renderTrigger += 1
         }
     }
+
+    // MARK: - Упрощение пути (Ramer–Douglas–Peucker, итеративное)
+
+    private func simplifyPathRDP(points: [simd_float3], epsilon: Float) -> [simd_float3] {
+        guard points.count > 2 else { return points }
+
+        let count = points.count
+        var keep = [Bool](repeating: false, count: count)
+        keep[0] = true
+        keep[count - 1] = true
+
+        // Стек диапазонов для обработки
+        var stack = [(start: 0, end: count - 1)]
+        while let range = stack.popLast() {
+            guard range.end - range.start > 1 else { continue }
+
+            var maxDistSq: Float = 0
+            var maxIndex = range.start
+
+            let startPoint = points[range.start]
+            let endPoint = points[range.end]
+            let lineVec = endPoint - startPoint
+            let lineLenSq = simd_length_squared(lineVec)
+
+            for i in range.start + 1 ..< range.end {
+                var distSq: Float = 0
+                if lineLenSq < 1e-6 {
+                    // Линия практически точка
+                    distSq = simd_distance_squared(points[i], startPoint)
+                } else {
+                    // Расстояние от точки до отрезка
+                    let t = max(0, min(1, simd_dot(points[i] - startPoint, lineVec) / lineLenSq))
+                    let projection = startPoint + lineVec * t
+                    distSq = simd_distance_squared(points[i], projection)
+                }
+                if distSq > maxDistSq {
+                    maxDistSq = distSq
+                    maxIndex = i
+                }
+            }
+
+            if maxDistSq > epsilon * epsilon {
+                keep[maxIndex] = true
+                stack.append((range.start, maxIndex))
+                stack.append((maxIndex, range.end))
+            }
+        }
+
+        // Собираем результат
+        var result = [simd_float3]()
+        result.reserveCapacity(keep.lazy.filter { $0 }.count)
+        for i in 0..<count where keep[i] {
+            result.append(points[i])
+        }
+        return result
+    }
+
+    // MARK: - Оптимизированное создание буферов трубки
+
+    private func createTubeBuffersOptimized(for path: [simd_float3],
+                                            radius: Float,
+                                            segments: Int,
+                                            precomputedAngles: [(cos: Float, sin: Float)]) -> (v: [SCNVector3], n: [SCNVector3], i: [Int32])?
+    {
+        let pointCount = path.count
+        guard pointCount >= 2 else { return nil }
+
+        var vertices = [SCNVector3]()
+        var normals = [SCNVector3]()
+        var indices = [Int32]()
+
+        let totalVertices = pointCount * segments
+        vertices.reserveCapacity(totalVertices)
+        normals.reserveCapacity(totalVertices)
+        indices.reserveCapacity((pointCount - 1) * segments * 6)
+
+        // Инициализация системы координат
+        var T = simd_normalize(path[1] - path[0])
+        var N = simd_float3(0, 1, 0)
+        if abs(simd_dot(T, N)) > 0.99 { N = simd_float3(1, 0, 0) }
+        N = simd_normalize(simd_cross(T, N))
+        var B = simd_cross(T, N)
+
+        for i in 0..<pointCount {
+            // Обновление системы координат при изменении направления
+            if i > 0 {
+                let newT = simd_normalize(path[i] - path[i - 1])
+                let axis = simd_cross(T, newT)
+                let len = simd_length(axis)
+                if len > 0.0001 {
+                    let angle = acos(min(max(simd_dot(T, newT), -1.0), 1.0))
+                    let q = simd_quatf(angle: angle, axis: axis / len)
+                    N = q.act(N)
+                    B = q.act(B)
+                }
+                T = newT
+            }
+
+            // Генерация кольца вершин, используя предвычисленные углы
+            for j in 0..<segments {
+                let (cosA, sinA) = precomputedAngles[j]
+                let normal = simd_normalize(N * cosA + B * sinA)
+                let pos = path[i] + normal * radius
+                normals.append(SCNVector3(normal))
+                vertices.append(SCNVector3(pos))
+            }
+        }
+
+        // Индексы треугольников
+        for i in 0..<pointCount - 1 {
+            let idx1 = Int32(i * segments)
+            let idx2 = Int32((i + 1) * segments)
+            for j in 0..<segments {
+                let curr1 = idx1 + Int32(j)
+                let next1 = idx1 + (Int32(j) + 1) % Int32(segments)
+                let curr2 = idx2 + Int32(j)
+                let next2 = idx2 + (Int32(j) + 1) % Int32(segments)
+                indices.append(contentsOf: [curr1, next1, curr2, next1, next2, curr2])
+            }
+        }
+
+        return (vertices, normals, indices)
+    }
+    
     
     func applyCollinearAngle() {
         collinearAngle = tempCollinearAngle
@@ -328,6 +482,52 @@ class AppState: ObservableObject {
 }
 
 func removeCollinearPoints(from points: inout [simd_float3], angleThresholdDeg: Float) {
+    guard points.count > 2 else { return }
+
+    // Предвычисляем косинус порога (один раз)
+    let cosThreshold = cos(angleThresholdDeg * Float.pi / 180)
+    let cosThresholdSq = cosThreshold * cosThreshold
+
+    var filtered = [simd_float3]()
+    filtered.reserveCapacity(points.count)
+    filtered.append(points[0])
+
+    for i in 1..<points.count - 1 {
+        let p1 = filtered.last!   // последняя оставленная точка
+        let p2 = points[i]
+        let p3 = points[i + 1]
+
+        let v1 = p2 - p1
+        let v2 = p3 - p2
+
+        let len1Sq = simd_length_squared(v1)
+        let len2Sq = simd_length_squared(v2)
+
+        // Исключаем вырожденные участки
+        if len1Sq < 1e-6 || len2Sq < 1e-6 { continue }
+
+        let dotProduct = simd_dot(v1, v2)
+
+        // Случай тупого или прямого угла (>90°) – всегда оставляем
+        if dotProduct < 0 {
+            filtered.append(p2)
+            continue
+        }
+
+        // Сравниваем квадраты, избегая sqrt
+        let dotSq = dotProduct * dotProduct
+        if dotSq < cosThresholdSq * len1Sq * len2Sq {
+            // Угол больше порога → точка важна, оставляем
+            filtered.append(p2)
+        }
+        // иначе угол слишком мал (почти прямая) – точку пропускаем
+    }
+
+    filtered.append(points.last!)
+    points = filtered
+}
+
+func removeCollinearPoints0(from points: inout [simd_float3], angleThresholdDeg: Float) {
     guard points.count > 2 else { return }
     var filtered: [simd_float3] = [points[0]]
     for i in 1..<points.count - 1 {
