@@ -19,6 +19,10 @@ struct GCodeSceneView: NSViewRepresentable {
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
         view.backgroundColor = NSColor.black
+        //view.antialiasingMode = .multisampling2X
+        // 2. Включаем более продвинутый алгоритм временного сглаживания (Jittering),
+        view.isJitteringEnabled = true
+        
         view.scene = SCNScene()
         setupCamera(in: view)
         context.coordinator.sceneView = view

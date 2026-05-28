@@ -90,7 +90,8 @@ struct ContentView: View {
         }.tabItem { Label("Analytics", systemImage: "chart.bar") }
     }
     
-    private func analyticsContent(stats: GCodeStats) -> some View {
+    /*
+     private func analyticsContent(stats: GCodeStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Group {
                 Text("=== GCODE ANALYSIS ===").font(.headline)
@@ -125,6 +126,74 @@ struct ContentView: View {
                 Text("Reduction: \(String(format: "%.1f", stats.optimizationReductionPercent))%")
             }
         }
+    }
+     */
+
+    private func analyticsContent(stats: GCodeStats) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("=== АНАЛИЗ GCODE ФАЙЛА ===").font(.headline)
+            Text("\(stats.fileName), \(formatBytes(stats.fileSize))")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Divider()
+            
+            Text("1. Размеры модели:").fontWeight(.semibold)
+            Text("- Высота (Z): \(String(format: "%.2f", stats.height)) мм")
+            Text("- Длина (Y): \(String(format: "%.2f", stats.length)) мм")
+            Text("- Ширина (X): \(String(format: "%.2f", stats.width)) мм")
+            
+            Text("2. Количество точек с экструзией: \(stats.extrusionPoints)").fontWeight(.semibold)
+            Text("3. Длина пути печати: \(stats.extrusionPathLength.formattedWithSpaces) мм")
+            Text("4. Скорость печати: \(String(format: "%.1f", stats.maxSpeedMmPerMin / 60.0)) мм/с")
+            Text("5. Расчетное время печати: \(String(format: "%.1f", stats.estimatedPrintTimeMin/60)) ч.")
+            Text("6. Количество слоев: \(stats.numLayers)")
+            
+            Divider()
+            
+            Text("7. Количество экструзии (код E):").fontWeight(.semibold)
+            Text("- Всего: \(stats.totalExtrusion.formattedWithSpaces) мм")
+            Text("- На точку: мин \(String(format: "%.4f", stats.minEPerPoint)) мм (\(stats.minEPointCoords))")
+            Text("- На точку: макс \(String(format: "%.4f", stats.maxEPerPoint)) мм (\(stats.maxEPointCoords))")
+            
+            Divider()
+            
+            Text("=== OPTIMIZATION ===").font(.headline)
+            Text("Original ext pts: \(stats.originalExtrusionPoints)")
+            Text("Optimized ext pts: \(stats.optimizedExtrusionPoints)")
+            Text("Reduction: \(String(format: "%.1f", stats.optimizationReductionPercent))%")
+            
+            //Divider()
+            
+            /*
+             Text("8. Изменение температур по уровням (Z):").fontWeight(.semibold)
+            if stats.tempChanges.isEmpty {
+                Text("- Изменения температур не обнаружены")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(stats.tempChanges) { t in
+                    HStack {
+                        Text("Слой \(t.layer) (Z: \(String(format: "%.1f", t.z))):")
+                        Text("\(t.command) → \(String(format: "%.0f", t.temp))°C")
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+            */
+            
+            //Divider()
+            
+            /* Text("8. Дополнительно, расшифровка управляющих кодов:").fontWeight(.semibold)
+            Text("G0/G1 - линейное перемещение\nG2/G3 - дуговое перемещение\nG28 - возврат в начало координат\nM104/M109 - температура экструдера\nM140/M190 - температура стола\nM106/M107 - система охлаждения")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.leading)*/
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
     
     private var logTab: some View {
@@ -232,7 +301,7 @@ struct ContentView: View {
             
             Text("Collinear Angle Threshold (°)")
             HStack {
-                Slider(value: $appState.tempCollinearAngle, in: 0.5...30.0, step: 0.5)
+                Slider(value: $appState.tempCollinearAngle, in: 0.0...30.0, step: 0.5)
                 Text(String(format: "%.1f°", appState.tempCollinearAngle)).frame(width: 40)
             }
             Text("Lower = more detail, Higher = faster")
@@ -481,5 +550,13 @@ struct CamButton: View {
     @EnvironmentObject var appState: AppState
     var body: some View {
         Button(title) { appState.cameraAction = action }.buttonStyle(.bordered)
+    }
+}
+
+extension Float {
+    var formattedWithSpaces: String {
+        // Тот же трюк с заменой, но завернутый в удобное свойство
+        String(format: "%.2f", locale: Locale(identifier: "en_US"), self)
+            .replacingOccurrences(of: ",", with: " ")
     }
 }

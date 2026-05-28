@@ -4,7 +4,7 @@ import SwiftUI
 import Combine
 import SceneKit
 
-struct GCodePoint { var x: Float = 0; var y: Float = 0; var z: Float = 0; var e: Float = 0; var feedRate: Float = 0; var layer: Int = 0; var isExtrusion: Bool = false }
+/*struct GCodePoint { var x: Float = 0; var y: Float = 0; var z: Float = 0; var e: Float = 0; var feedRate: Float = 0; var layer: Int = 0; var isExtrusion: Bool = false }
 
 struct GCodeStats {
     var totalPoints: Int = 0; var extrusionPoints: Int = 0; var travelPoints: Int = 0
@@ -15,6 +15,37 @@ struct GCodeStats {
     var extrusionPathLength: Float = 0; var travelPathLength: Float = 0; var estimatedPrintTimeMin: Float = 0
     var averageFlowRate: Float = 0; var boundingBoxVolume: Float = 0; var xyFootprintArea: Float = 0
     var centerOfMassX: Float = 0; var centerOfMassY: Float = 0; var sharpCornersCount: Int = 0; var modelCompactness: Float = 0
+}
+*/
+struct GCodePoint { var x: Float = 0; var y: Float = 0; var z: Float = 0; var e: Float = 0; var feedRate: Float = 0; var layer: Int = 0; var isExtrusion: Bool = false }
+
+struct TempChange: Identifiable {
+    let id = UUID()
+    let layer: Int
+    let z: Float
+    let temp: Float
+    let command: String
+}
+
+struct GCodeStats {
+    var fileName: String = ""
+    var fileSize: Int64 = 0
+    var width: Float = 0; var length: Float = 0; var height: Float = 0
+    var originalExtrusionPoints: Int = 0;
+    var optimizedExtrusionPoints: Int = 0;
+    var optimizationReductionPercent: Double = 0
+    var extrusionPoints: Int = 0
+    var extrusionPathLength: Float = 0
+    var maxSpeedMmPerMin: Float = 0
+    var estimatedPrintTimeMin: Float = 0
+    var numLayers: Int = 0
+    var totalExtrusion: Float = 0
+    var minEPerPoint: Float = 0
+    var maxEPerPoint: Float = 0
+    var minEPointCoords: String = ""
+    var maxEPointCoords: String = ""
+    var tempChanges: [TempChange] = []
+    var totalPoints: Int = 0; var travelPoints: Int = 0
 }
 
 enum CameraAction { case none, front, back, top, bottom, left, right, iso1, iso2, iso3, iso4, rotate360 }
@@ -97,6 +128,7 @@ class AppState: ObservableObject {
         guard let file = selectedFileURL else { return }
         isLoading = true
         stats = nil
+        stats = GCodeStats()
         log("📂 Start loading: \(file.lastPathComponent)")
         
         DispatchQueue.global(qos: .userInitiated).async {
@@ -119,17 +151,13 @@ class AppState: ObservableObject {
                 self.modelColor = self.tempModelColor
                 // Сразу строим 3D сцену
                 self.renderTrigger += 1
-                DispatchQueue.global(qos: .userInitiated).async {
-                    self.calculateAnalytics()
-                }
-                DispatchQueue.global(qos: .userInitiated).async {
-                    self.processGeometry()
-                }
+                self.processGeometry()
+                self.calculateAnalytics()
             }
         }
     }
     
-    // НОВОЕ: Вычисление аналитики по кнопке
+    /* НОВОЕ: Вычисление аналитики по кнопке
     func calculateAnalytics() {
         guard !rawPoints.isEmpty else { return }
         isCalculatingAnalytics = true
@@ -236,6 +264,171 @@ class AppState: ObservableObject {
             }
         }
     }
+    */
+    
+    func calculateAnalytics() {
+        guard !rawPoints.isEmpty, let url = selectedFileURL else { return }
+        isCalculatingAnalytics = true
+        log("📊 Calculating analytics...")
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 1. Локальный захват массива — убираем ARC overhead от self.rawPoints
+            let points = self.rawPoints
+            
+            var stats = GCodeStats()
+            stats.fileName = url.lastPathComponent
+            stats.fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            
+            var minX: Float = .greatestFiniteMagnitude, maxX: Float = -.greatestFiniteMagnitude
+            var minY: Float = .greatestFiniteMagnitude, maxY: Float = -.greatestFiniteMagnitude
+            var minZ: Float = .greatestFiniteMagnitude, maxZ: Float = -.greatestFiniteMagnitude
+            var extPath: Float = 0, travPath: Float = 0, printTime: Float = 0
+            var maxF: Float = 0
+            var extCount = 0
+            var maxLayer = 0
+            
+            var totalE: Float = 0
+            var minE: Float = .greatestFiniteMagnitude
+            var maxE: Float = 0
+            var lastE: Float = 0
+            
+            var minEPoint = GCodePoint()
+            var maxEPoint = GCodePoint()
+            
+            // Оптимизация словаря слоев: кешируем последний Z, чтобы не хешировать Float каждую итерацию
+            var zToLayer: [Float: Int] = [:]
+            zToLayer.reserveCapacity(256)
+            var lastZ: Float = -.greatestFiniteMagnitude
+            var lastLayerForZ: Int = 0
+            
+            // 2. Используем UnsafeBufferPointer для максимальной скорости обхода массива
+            points.withUnsafeBufferPointer { buffer in
+                guard let baseAddress = buffer.baseAddress else { return }
+                
+                for i in 0..<buffer.count {
+                    let point = baseAddress[i]
+                    
+                    // Быстрый маппинг слоев
+                    if point.z != lastZ {
+                        if let existingLayer = zToLayer[point.z] {
+                            lastLayerForZ = existingLayer
+                        } else {
+                            zToLayer[point.z] = point.layer
+                            lastLayerForZ = point.layer
+                        }
+                        lastZ = point.z
+                    }
+                    
+                    if point.layer > maxLayer { maxLayer = point.layer }
+                    
+                    if point.isExtrusion {
+                        extCount += 1
+                        if point.x < minX { minX = point.x }
+                        if point.x > maxX { maxX = point.x }
+                        if point.y < minY { minY = point.y }
+                        if point.y > maxY { maxY = point.y }
+                        if point.z < minZ { minZ = point.z }
+                        if point.z > maxZ { maxZ = point.z }
+                        if point.feedRate > maxF { maxF = point.feedRate }
+                        
+                        let deltaE = point.e - lastE
+                        if deltaE > 0 { // Быстрее чем max(0, ...)
+                            totalE += deltaE
+                            if deltaE > maxE { maxE = deltaE; maxEPoint = point }
+                            if deltaE < minE && deltaE > 0.0001 { minE = deltaE; minEPoint = point }
+                        }
+                        lastE = point.e
+                    }
+                    
+                    if i > 0 {
+                        let prev = baseAddress[i - 1]
+                        let dx = point.x - prev.x, dy = point.y - prev.y, dz = point.z - prev.z
+                        let distSq = dx*dx + dy*dy + dz*dz
+                        
+                        if distSq > 0.000001 { // Избегаем sqrt для нулевых перемещений
+                            let dist = sqrt(distSq)
+                            if point.isExtrusion { extPath += dist } else { travPath += dist }
+                            let speed = point.feedRate > 0 ? point.feedRate : 1000.0
+                            printTime += dist / speed // feedRate в мм/мин -> время в минутах
+                        }
+                    }
+                }
+            }
+            
+            stats.width = maxX - minX
+            stats.length = maxY - minY
+            stats.height = maxZ - minZ
+            stats.extrusionPoints = extCount
+            stats.extrusionPathLength = extPath
+            stats.maxSpeedMmPerMin = maxF
+            stats.estimatedPrintTimeMin = printTime // Уже в минутах
+            stats.numLayers = maxLayer + 1
+            stats.totalExtrusion = totalE
+            stats.minEPerPoint = minE == .greatestFiniteMagnitude ? 0 : minE
+            stats.maxEPerPoint = maxE
+            
+            let formatCoord = { (p: GCodePoint) -> String in
+                "X:\(String(format: "%.2f", p.x)) Y:\(String(format: "%.2f", p.y)) Z:\(String(format: "%.2f", p.z))"
+            }
+            stats.minEPointCoords = minE == .greatestFiniteMagnitude ? "N/A" : formatCoord(minEPoint)
+            stats.maxEPointCoords = maxE == 0 ? "N/A" : formatCoord(maxEPoint)
+            
+            // 3. Парсинг температур (используем быстрый NSData вместо String(contentsOf:))
+            //stats.tempChanges = self.parseTemperatureChangesFast(file: url, zToLayer: zToLayer)
+            
+            DispatchQueue.main.async {
+                if let unwrappedStats = self.stats {
+                    stats.originalExtrusionPoints = unwrappedStats.originalExtrusionPoints
+                    stats.optimizedExtrusionPoints = unwrappedStats.optimizedExtrusionPoints
+                    stats.optimizationReductionPercent = unwrappedStats.optimizationReductionPercent
+                }
+                self.stats = stats
+                self.isCalculatingAnalytics = false
+                self.log("⏱ Analytics calculated in \(String(format: "%.2f", (CFAbsoluteTimeGetCurrent() - startTime) * 1000)) ms")
+            }
+        }
+    }
+    
+
+    // Сверхбыстрый парсинг чисел прямо из байтов ASCII
+    private func extractFloatFromData(data: Data.SubSequence, targetChar: UInt8) -> Float? {
+        guard let targetIndex = data.firstIndex(of: targetChar) else { return nil }
+        
+        var index = data.index(after: targetIndex)
+        var isNegative = false
+        var hasDot = false
+        var result: Float = 0
+        var decimalMultiplier: Float = 1
+        
+        // Проверяем минус
+        if index < data.endIndex && data[index] == 45 { // ASCII "-"
+            isNegative = true
+            index = data.index(after: index)
+        }
+        
+        while index < data.endIndex {
+            let byte = data[index]
+            if byte >= 48 && byte <= 57 { // Цифры 0-9
+                let digit = Float(byte - 48)
+                if hasDot {
+                    decimalMultiplier *= 0.1
+                    result += digit * decimalMultiplier
+                } else {
+                    result = result * 10 + digit
+                }
+            } else if byte == 46 && !hasDot { // Точка "."
+                hasDot = true
+            } else {
+                break // Число закончилось
+            }
+            index = data.index(after: index)
+        }
+        
+        return isNegative ? -result : result
+    }
+    
+    
     
     // MARK: - Optimized processGeometry
 
@@ -244,7 +437,7 @@ class AppState: ObservableObject {
 
         // Параметры
         let radius = Float(tubeDiameter / 2.0)
-        let epsilon = simplifyEpsilon > 0 ? simplifyEpsilon : radius * 0.2
+        _ = simplifyEpsilon > 0 ? simplifyEpsilon : radius * 0.2
         let segments = 8
 
         // Предвычисление тригонометрии
@@ -258,7 +451,7 @@ class AppState: ObservableObject {
         var globalMin = simd_float3(repeating: Float.greatestFiniteMagnitude)
         var globalMax = simd_float3(repeating: -Float.greatestFiniteMagnitude)
 
-        layers.reserveCapacity(1000) // примерная оценка
+        layers.reserveCapacity(3000) // примерная оценка
         for point in rawPoints {
             guard point.isExtrusion else { continue }
             let pos = simd_float3(Float(point.x), Float(point.z), -Float(point.y))
@@ -274,13 +467,17 @@ class AppState: ObservableObject {
         // Массив для результатов, инициализированный nil
         var meshes: [LayerMesh?] = Array(repeating: nil, count: layerCount)
 
+        var originalCount = 0
+        var optimizedCount = 0
         DispatchQueue.concurrentPerform(iterations: layerCount) { index in
             var (layerID, points) = sortedLayers[index]
 
             // Упрощение пути
             //let simplified = simplifyPathRDP(points: points, epsilon: epsilon)
             //guard simplified.count >= 2 else { return }
+            originalCount+=points.count
             removeCollinearPoints(from: &points, angleThresholdDeg: collinearAngle)
+            optimizedCount+=points.count
             // Генерация буферов
             if let tubeData = createTubeBuffersOptimized(for: points,
                                                          radius: radius,
@@ -294,6 +491,13 @@ class AppState: ObservableObject {
             }
         }
 
+        if var vstats = self.stats {  // Используем 'var' вместо 'let'
+            vstats.originalExtrusionPoints = originalCount
+            vstats.optimizedExtrusionPoints = optimizedCount
+            vstats.optimizationReductionPercent = originalCount > 0 ? (1.0 - Double(optimizedCount) / Double(originalCount)) * 100.0 : 0.0
+            self.stats = vstats  // Присваиваем обратно
+        }
+        
         // Убираем nil
         let finalMeshes = meshes.compactMap { $0 }
 
@@ -483,7 +687,8 @@ class AppState: ObservableObject {
 
 func removeCollinearPoints(from points: inout [simd_float3], angleThresholdDeg: Float) {
     guard points.count > 2 else { return }
-
+    if angleThresholdDeg==0 { return }
+    
     // Предвычисляем косинус порога (один раз)
     let cosThreshold = cos(angleThresholdDeg * Float.pi / 180)
     let cosThresholdSq = cosThreshold * cosThreshold

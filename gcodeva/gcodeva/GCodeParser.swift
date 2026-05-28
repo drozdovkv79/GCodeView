@@ -73,7 +73,7 @@ class GCodeParser {
         
         let t2 = CFAbsoluteTimeGetCurrent()
         
-        // Легкая статистика (миллисекунды)
+        /*Легкая статистика (миллисекунды)
         if state.stats.extrusionPoints > 0 {
             state.stats.width = state.extMaxX - state.extMinX
             state.stats.length = state.extMaxY - state.extMinY
@@ -87,7 +87,7 @@ class GCodeParser {
         state.stats.numLayers = state.currentLayer + 1
         state.stats.totalMaterial = state.totalE
         state.stats.maxSpeed = state.maxSpeed
-        
+        */
         let t3 = CFAbsoluteTimeGetCurrent()
         
         // ЛОГ В КОНСОЛЬ XCODE

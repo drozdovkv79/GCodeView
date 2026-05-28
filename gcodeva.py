@@ -42,6 +42,75 @@ from PyQt6.QtWidgets import (
 from pyvistaqt import QtInteractor
 from scipy import interpolate
 
+# Словарь расшифровок управляющих кодов
+# Словарь расшифровок управляющих кодов
+CONTROL_CODES = {
+    # --- Стандартные G/M коды ---
+    "G28": "Калибровка (Auto-home)",
+    "G29": "Автовыравнивание стола (Bed leveling)",
+    "G30": "Ручное зондирование стола",
+    "G92": "Сброс позиций координат",
+    "M0": "Пауза",
+    "M1": "Пауза",
+    "M18": "Отключение двигателей",
+    "M22": "Инициализация SD-карты",
+    "M23": "Выбор файла на SD",
+    "M24": "Старт печати с SD",
+    "M25": "Пауза печати с SD",
+    "M27": "Отчет о статусе SD",
+    "M31": "Вывод времени печати",
+    "M42": "Управление пинами",
+    "M73": "Установка % выполнения",
+    "M80": "Включение блока питания",
+    "M81": "Отключение блока питания",
+    "M84": "Отключение двигателей (таймаут)",
+    "M104": "Нагрев экструдера (без ожидания)",
+    "M105": "Запрос температур",
+    "M106": "Включение вентилятора обдува",
+    "M107": "Отключение вентилятора обдува",
+    "M109": "Нагрев экструдера (с ожиданием)",
+    "M110": "Сброс номера строки",
+    "M112": "Аварийная остановка",
+    "M114": "Запрос текущих координат",
+    "M117": "Вывод сообщения на дисплей",
+    "M140": "Нагрев стола (без ожидания)",
+    "M190": "Нагрев стола (с ожиданием)",
+    "M207": "Настройка отката (Retraction)",
+    "M208": "Настройка возврата отката",
+    "M220": "Множитель скорости печати",
+    "M221": "Множитель потока (Flow)",
+    "M226": "Пауза (ожидание)",
+    "M300": "Звуковой сигнал (Beep)",
+    "M301": "Настройка PID экструдера",
+    "M304": "Настройка PID стола",
+    "M400": "Ожидание завершения буфера",
+    "M420": "Включение матрицы выравнивания стола",
+    "M500": "Сохранение настроек в EEPROM",
+    "M501": "Загрузка настроек из EEPROM",
+    "M502": "Сброс к заводским настройкам",
+    "M503": "Вывод настроек EEPROM",
+    "M600": "Смена филамента",
+    "M701": "Загрузка филамента",
+    "M702": "Выгрузка филамента",
+    "M900": "Линейное продвижение (Linear Advance)",
+    # --- Специфичные команды Klipper ---
+    "SET_HEATER_TEMPERATURE": "Установка температуры нагревателя (Klipper)",
+    "SET_PRESSURE_ADVANCE": "Настройка Pressure Advance (Klipper)",
+    "SET_EXTRUDER_STEP_DISTANCE": "Изменение шагов на мм экструдера (Klipper)",
+    "SET_VELOCITY_LIMIT": "Изменение лимитов скорости/ускорения (Klipper)",
+    "TEMPERATURE_WAIT": "Ожидание нагрева до температуры (Klipper)",
+    "QUERY_PROBE": "Запрос состояния Z-датчика (Klipper)",
+    "PROBE": "Активация Z-датчика (Klipper)",
+    "PROBE_ACCURACY": "Проверка точности Z-датчика (Klipper)",
+    "SAVE_CONFIG": "Сохранение конфигурации в printer.cfg (Klipper)",
+    "FIRMWARE_RESTART": "Перезапуск прошивки MCU (Klipper)",
+    "STATUS": "Запрос статуса принтера (Klipper)",
+    "PAUSE": "Пауза печати (Макрос Klipper)",
+    "RESUME": "Продолжение печати (Макрос Klipper)",
+    "CANCEL_PRINT": "Отмена печати (Макрос Klipper)",
+    "RESPOND": "Вывод сообщения в веб-интерфейс (Klipper)",
+}
+
 
 class GCodeAnalyzer:
     """Класс для анализа GCode файлов"""
@@ -51,23 +120,55 @@ class GCodeAnalyzer:
         self.layers = defaultdict(list)
         self.current_layer = 0
         self.feed_rate = 0
-        self.extruder_pos = 0
-        self.absolute_extruder = False
-        self.extrusion_points = []  # Точки с экструзией (G1)
-        self.travel_points = []  # Точки перемещения (G0)
+        self.absolute_extruder = True  # По умолчанию M82
+        self.extrusion_points = []
+        self.travel_points = []
+
+        # Новые переменные для статистики
+        self.control_codes_stats = defaultdict(int)
+        self.temp_changes = []
+        self.current_hotend_temp = 0
+        self.current_bed_temp = 0
+
+    def _process_non_move_line(self, line, current_z):
+        """Обработка управляющих кодов и температур"""
+        parts = line.split()
+        if not parts:
+            return
+
+        cmd = parts[0].upper()
+
+        # 1. Отслеживание температур (только при изменении)
+        if cmd in ("M104", "M109", "M140", "M190"):
+            s_match = re.search(r"S([-\d.]+)", line)
+            if s_match:
+                new_temp = int(float(s_match.group(1)))
+                if cmd in ("M104", "M109") and new_temp != self.current_hotend_temp:
+                    self.temp_changes.append((float(current_z), "Экструдер", new_temp))
+                    self.current_hotend_temp = new_temp
+                elif cmd in ("M140", "M190") and new_temp != self.current_bed_temp:
+                    self.temp_changes.append((float(current_z), "Стол", new_temp))
+                    self.current_bed_temp = new_temp
+
+        # 2. Сбор статистики управляющих кодов
+        if cmd in CONTROL_CODES:
+            self.control_codes_stats[cmd] += 1
 
     def parse_file_from_lines(self, lines, progress_callback=None):
         """Парсинг GCode из списка строк с прогрессом по проценту"""
-        # Используем списки Python только на время парсинга
         points_list = []
         extrusion_list = []
         travel_list = []
         layers_dict = defaultdict(list)
 
         self.current_layer = 0
+        self.control_codes_stats = defaultdict(int)
+        self.temp_changes = []
+        self.current_hotend_temp = 0
+        self.current_bed_temp = 0
 
         x, y, z = np.float32(0.0), np.float32(0.0), np.float32(0.0)
-        e = np.float32(0.0)
+        prev_e = np.float32(0.0)  # Отслеживаем ПРЕДЫДУЩУЮ позицию E для расчета дельты
         last_z = np.float32(0.0)
         point_index = 0
         layer_threshold = np.float32(1.0)
@@ -77,10 +178,10 @@ class GCodeAnalyzer:
 
         for line_num, line in enumerate(lines):
             line = line.strip()
-
             if not line or line.startswith(";"):
                 continue
 
+            # Установка режима экструдера
             if "M82" in line:
                 self.absolute_extruder = True
                 continue
@@ -88,6 +189,17 @@ class GCodeAnalyzer:
                 self.absolute_extruder = False
                 continue
 
+            # Обработка сброса координат (G92)
+            if line.startswith("G92"):
+                e_match = re.search(r"E([-\d.]+)", line)
+                if e_match:
+                    prev_e = np.float32(
+                        e_match.group(1)
+                    )  # Обновляем предыдущую позицию E
+                self._process_non_move_line(line, z)
+                continue
+
+            # Обработка G0 и G1 команд
             if line.startswith(("G0 ", "G1 ", "G0\t", "G1\t")):
                 x_match = re.search(r"X([-\d.]+)", line)
                 y_match = re.search(r"Y([-\d.]+)", line)
@@ -104,24 +216,35 @@ class GCodeAnalyzer:
                     if abs(z - last_z) > layer_threshold:
                         self.current_layer += 1
                         last_z = z
+
+                # Расчет дельты экструзии
+                delta_e = np.float32(0.0)
                 if e_match:
-                    e = np.float32(e_match.group(1))
+                    current_e_val = np.float32(e_match.group(1))
+                    if self.absolute_extruder:
+                        delta_e = current_e_val - prev_e
+                        prev_e = current_e_val
+                    else:
+                        # В относительном режиме (M83) значение E - это уже дельта
+                        delta_e = current_e_val
+                        prev_e += current_e_val
+
                 if f_match:
                     self.feed_rate = np.float32(f_match.group(1))
 
                 is_g1 = line.startswith(("G1 ", "G1\t"))
-                has_extrusion = e_match is not None and is_g1 and e > 0
+                has_extrusion = is_g1 and delta_e > 0
 
-                # Храним как numpy массив для экономии памяти
+                # В массив теперь сохраняется delta_e вместо абсолютного E
                 point = np.array(
                     [
                         x,
                         y,
                         z,
-                        e,
+                        delta_e,
                         self.feed_rate,
                         self.current_layer,
-                        is_g1 and has_extrusion,
+                        has_extrusion,
                         point_index,
                     ],
                     dtype=np.float32,
@@ -136,6 +259,9 @@ class GCodeAnalyzer:
 
                 layers_dict[self.current_layer].append(point)
                 point_index += 1
+            else:
+                # Обработка всех остальных команд (не перемещений)
+                self._process_non_move_line(line, z)
 
             # Обновление прогресса
             if progress_callback and total_lines > 0:
@@ -165,37 +291,39 @@ class GCodeAnalyzer:
         )
 
         # Конвертируем слои
-        self.layers = {}
-        for layer_num, layer_points in layers_dict.items():
-            self.layers[layer_num] = np.array(layer_points, dtype=np.float32)
+        self.layers = {
+            layer_num: np.array(layer_points, dtype=np.float32)
+            for layer_num, layer_points in layers_dict.items()
+        }
 
         return self.points
 
     def parse_file(self, filepath):
-        """Парсинг GCode файла"""
+        """Парсинг GCode файла (словари)"""
         self.points = []
         self.layers = defaultdict(list)
         self.extrusion_points = []
         self.travel_points = []
         self.current_layer = 0
+        self.control_codes_stats = defaultdict(int)
+        self.temp_changes = []
+        self.current_hotend_temp = 0
+        self.current_bed_temp = 0
 
         x, y, z = 0.0, 0.0, 0.0
-        e = 0.0
+        prev_e = 0.0
         last_z = 0.0
         point_index = 0
-        layer_threshold = 1.0  # Порог смены слоя по Z в мм
+        layer_threshold = 1.0
 
         with open(filepath, "r") as f:
             lines = f.readlines()
 
         for line in lines:
             line = line.strip()
-
-            # Пропускаем комментарии и пустые строки
             if not line or line.startswith(";"):
                 continue
 
-            # Установка режима экструдера
             if "M82" in line:
                 self.absolute_extruder = True
                 continue
@@ -203,9 +331,14 @@ class GCodeAnalyzer:
                 self.absolute_extruder = False
                 continue
 
-            # Обработка G0 и G1 команд
+            if line.startswith("G92"):
+                e_match = re.search(r"E([-\d.]+)", line)
+                if e_match:
+                    prev_e = float(e_match.group(1))
+                self._process_non_move_line(line, z)
+                continue
+
             if line.startswith(("G0 ", "G1 ", "G0\t", "G1\t")):
-                # Извлечение координат
                 x_match = re.search(r"X([-\d.]+)", line)
                 y_match = re.search(r"Y([-\d.]+)", line)
                 z_match = re.search(r"Z([-\d.]+)", line)
@@ -218,44 +351,52 @@ class GCodeAnalyzer:
                     y = float(y_match.group(1))
                 if z_match:
                     z = float(z_match.group(1))
+                    if abs(z - last_z) > layer_threshold:
+                        self.current_layer += 1
+                        last_z = z
+
+                delta_e = 0.0
                 if e_match:
-                    e = float(e_match.group(1))
+                    current_e_val = float(e_match.group(1))
+                    if self.absolute_extruder:
+                        delta_e = current_e_val - prev_e
+                        prev_e = current_e_val
+                    else:
+                        delta_e = current_e_val
+                        prev_e += current_e_val
+
                 if f_match:
                     self.feed_rate = float(f_match.group(1))
 
-                # Определение смены слоя по изменению Z
-                if z_match and abs(z - last_z) > layer_threshold:
-                    self.current_layer += 1
-                    last_z = z
-
                 is_g1 = line.startswith(("G1 ", "G1\t"))
-                has_extrusion = e_match is not None and is_g1 and e > 0
+                has_extrusion = is_g1 and delta_e > 0
 
                 point = {
                     "x": x,
                     "y": y,
                     "z": z,
-                    "e": e,
+                    "e": delta_e,  # Сохраняем дельту
                     "feed_rate": self.feed_rate,
                     "layer": self.current_layer,
-                    "is_extrusion": is_g1 and has_extrusion,
+                    "is_extrusion": has_extrusion,
                     "index": point_index,
                 }
 
                 self.points.append(point)
-
-                if point["is_extrusion"]:
+                if has_extrusion:
                     self.extrusion_points.append(point)
                 else:
                     self.travel_points.append(point)
 
                 self.layers[self.current_layer].append(point)
                 point_index += 1
+            else:
+                self._process_non_move_line(line, z)
 
         return self.points
 
     def get_statistics(self):
-        """Получение статистики по файлу (оптимизированная для float32)"""
+        """Получение статистики по файлу"""
         if len(self.points) == 0:
             return None
 
@@ -266,13 +407,27 @@ class GCodeAnalyzer:
         stats["extrusion_points"] = len(ext_pts)
         stats["travel_points"] = len(self.travel_points)
 
+        # Новая статистика: Температуры по уровням
+        stats["temperature_changes"] = self.temp_changes
+
+        # Новая статистика: Управляющие коды с расшифровкой
+        stats["control_codes"] = [
+            {
+                "code": code,
+                "count": count,
+                "description": CONTROL_CODES.get(code, "Неизвестный код"),
+            }
+            for code, count in sorted(self.control_codes_stats.items())
+        ]
+
         if len(ext_pts) == 0:
             return stats
 
-        # Извлекаем координаты как float32
         xs = ext_pts[:, 0].astype(np.float32)
         ys = ext_pts[:, 1].astype(np.float32)
         zs = ext_pts[:, 2].astype(np.float32)
+        # Теперь в индексе 3 лежает delta_e, поэтому сумма даст реальный объем материала!
+        e_deltas = ext_pts[:, 3].astype(np.float32)
 
         # Размеры модели
         stats["width"] = float(xs.max() - xs.min())
@@ -283,27 +438,18 @@ class GCodeAnalyzer:
         if len(xs) > 1:
             x_diffs = np.abs(np.diff(xs))
             x_diffs = x_diffs[x_diffs > 0]
-            if len(x_diffs) > 0:
-                stats["min_distance_x"] = float(x_diffs.min())
-                stats["max_distance_x"] = float(x_diffs.max())
-            else:
-                stats["min_distance_x"] = stats["max_distance_x"] = 0.0
+            stats["min_distance_x"] = float(x_diffs.min()) if len(x_diffs) > 0 else 0.0
+            stats["max_distance_x"] = float(x_diffs.max()) if len(x_diffs) > 0 else 0.0
 
             y_diffs = np.abs(np.diff(ys))
             y_diffs = y_diffs[y_diffs > 0]
-            if len(y_diffs) > 0:
-                stats["min_distance_y"] = float(y_diffs.min())
-                stats["max_distance_y"] = float(y_diffs.max())
-            else:
-                stats["min_distance_y"] = stats["max_distance_y"] = 0.0
+            stats["min_distance_y"] = float(y_diffs.min()) if len(y_diffs) > 0 else 0.0
+            stats["max_distance_y"] = float(y_diffs.max()) if len(y_diffs) > 0 else 0.0
 
             z_diffs = np.abs(np.diff(zs))
             z_diffs = z_diffs[z_diffs > 0]
-            if len(z_diffs) > 0:
-                stats["min_distance_z"] = float(z_diffs.min())
-                stats["max_distance_z"] = float(z_diffs.max())
-            else:
-                stats["min_distance_z"] = stats["max_distance_z"] = 0.0
+            stats["min_distance_z"] = float(z_diffs.min()) if len(z_diffs) > 0 else 0.0
+            stats["max_distance_z"] = float(z_diffs.max()) if len(z_diffs) > 0 else 0.0
         else:
             stats["min_distance_x"] = stats["max_distance_x"] = 0.0
             stats["min_distance_y"] = stats["max_distance_y"] = 0.0
@@ -328,21 +474,14 @@ class GCodeAnalyzer:
                 "avg_points_per_layer"
             ] = 0
 
-        # Количество материала
-        e_values = ext_pts[ext_pts[:, 3] > 0][:, 3].astype(np.float32)
-        total_e = float(e_values.sum()) if len(e_values) > 0 else 0.0
+        # Расчет материала (теперь сумма дельт)
+        total_e = float(e_deltas.sum()) if len(e_deltas) > 0 else 0.0
         stats["total_material"] = total_e
 
-        # Материал по слоям
+        # Материал по слоям (теперь корректно)
         material_per_layer = []
         for l in layers_with_extrusion:
-            l_e = float(
-                np.sum(
-                    self.layers[l][
-                        (self.layers[l][:, 6] > 0) & (self.layers[l][:, 3] > 0)
-                    ][:, 3]
-                )
-            )
+            l_e = float(np.sum(self.layers[l][self.layers[l][:, 6] > 0][:, 3]))
             material_per_layer.append(l_e)
 
         if material_per_layer:
@@ -354,10 +493,10 @@ class GCodeAnalyzer:
                 "avg_material_per_layer"
             ] = 0.0
 
-        # Материал на точку
-        if len(e_values) > 0:
-            stats["min_material_per_point"] = float(e_values.min())
-            stats["max_material_per_point"] = float(e_values.max())
+        # Материал на точку (дельта экструзии на одну точку)
+        if len(e_deltas) > 0:
+            stats["min_material_per_point"] = float(e_deltas.min())
+            stats["max_material_per_point"] = float(e_deltas.max())
         else:
             stats["min_material_per_point"] = stats["max_material_per_point"] = 0.0
 
@@ -388,63 +527,13 @@ class GCodeAnalyzer:
         max_speed_idx = np.argmax(speeds)
         extremes["max_speed"] = {"feed_rate": float(ext_pts[max_speed_idx, 4])}
 
+        # Теперь максимальная экструзия - это максимальный выдавленный объем за 1 ход
         e_vals = ext_pts[:, 3].astype(np.float32)
         max_e_idx = np.argmax(e_vals)
         extremes["max_extrusion"] = {"e": float(ext_pts[max_e_idx, 3])}
 
         extremes["num_sharp_corners"] = 0
 
-        return extremes
-
-    def _find_extremes(self):
-        """Поиск экстремумов и проблемных зон"""
-        extremes = {
-            "max_z": None,
-            "max_speed": None,
-            "max_extrusion": None,
-            "sharp_corners": [],
-        }
-
-        if not self.extrusion_points:
-            return extremes
-
-        # Максимальная высота
-        max_z = max(self.extrusion_points, key=lambda p: p["z"])
-        extremes["max_z"] = max_z
-
-        # Максимальная скорость
-        max_speed = max(self.extrusion_points, key=lambda p: p["feed_rate"])
-        extremes["max_speed"] = max_speed
-
-        # Максимальная экструзия
-        max_extr = max(self.extrusion_points, key=lambda p: p["e"])
-        extremes["max_extrusion"] = max_extr
-
-        # Поиск острых углов (изменение направления > 120 градусов)
-        for i in range(1, len(self.extrusion_points) - 1):
-            p1 = self.extrusion_points[i - 1]
-            p2 = self.extrusion_points[i]
-            p3 = self.extrusion_points[i + 1]
-
-            # Проверка только в пределах одного слоя
-            if p1["layer"] == p2["layer"] == p3["layer"]:
-                v1 = np.array([p2["x"] - p1["x"], p2["y"] - p1["y"]])
-                v2 = np.array([p3["x"] - p2["x"], p3["y"] - p2["y"]])
-
-                norm1 = np.linalg.norm(v1)
-                norm2 = np.linalg.norm(v2)
-
-                if norm1 > 0 and norm2 > 0:
-                    cos_angle = np.dot(v1, v2) / (norm1 * norm2)
-                    angle = np.arccos(np.clip(cos_angle, -1, 1))
-                    angle_deg = np.degrees(angle)
-
-                    if angle_deg > 120:
-                        extremes["sharp_corners"].append(
-                            {"point": p2, "angle": angle_deg}
-                        )
-
-        extremes["num_sharp_corners"] = len(extremes["sharp_corners"])
         return extremes
 
 
@@ -1122,6 +1211,27 @@ class MainWindow(QMainWindow):
             if extremes.get("max_extrusion"):
                 text += f"   - Максимальная экструзия: E={extremes['max_extrusion']['e']:.4f} мм\n"
             text += f"   - Количество острых углов (>120°): {extremes.get('num_sharp_corners', 0)}\n"
+
+        # Новый раздел: Изменение температур по уровням
+        text += "\n10. Изменение температур по уровням (Z):\n"
+        temp_changes = stats.get("temperature_changes", [])
+        if temp_changes:
+            for z, heater, temp in temp_changes:
+                text += f"   - Z={z:.2f} мм | {heater}: {temp} °C\n"
+        else:
+            text += "   - Изменения температур не обнаружены\n"
+
+        # Новый раздел: Управляющие коды
+        text += "\n11. Расшифровка управляющих кодов:\n"
+        control_codes = stats.get("control_codes", [])
+        if control_codes:
+            for code_info in control_codes:
+                code = code_info.get("code", "?")
+                count = code_info.get("count", 0)
+                desc = code_info.get("description", "Нет описания")
+                text += f"   - {code} (x{count}): {desc}\n"
+        else:
+            text += "   - Управляющие коды (кроме перемещений) не найдены\n"
 
         self.analytics_text.setText(text)
 
