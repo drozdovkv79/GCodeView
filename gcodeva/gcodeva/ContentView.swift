@@ -9,13 +9,11 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             leftPanel
-                // ФИКСИРОВАННЫЙ РАЗМЕР: 20% от ширины окна (например, при 1400px это 280pt)
                 .frame(minWidth: 220, idealWidth: 280, maxWidth: 350)
         } content: {
             centerPanel
         } detail: {
             rightPanel
-                // ФИКСИРОВАННЫЙ РАЗМЕР: 20% от ширины окна
                 .frame(minWidth: 220, idealWidth: 280, maxWidth: 400)
         }
     }
@@ -54,9 +52,16 @@ struct ContentView: View {
                 .border(Color.gray.opacity(0.3))
                 
                 Button(action: { appState.loadSelectedFile() }) {
-                    Text(appState.isLoading ? "Loading..." : "Load Model").frame(maxWidth: .infinity)
+                    Text(appState.isLoading ? "Loading..." : "Load Model (Replace)").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(appState.selectedFileURL == nil || appState.isLoading)
+                
+                // НОВАЯ КНОПКА ADD MODEL
+                Button(action: { appState.addModel() }) {
+                    Text(appState.isLoading ? "Adding..." : "➕ Add Selected Model").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
                 .disabled(appState.selectedFileURL == nil || appState.isLoading)
                 
                 if appState.isLoading { ProgressView(value: appState.progress, total: 100.0) }
@@ -65,9 +70,125 @@ struct ContentView: View {
                 DisclosureGroup("Export") { exportContent }
                 DisclosureGroup("Materials") { materialsContent }
                 DisclosureGroup("Parameters") { parametersContent }
+                
+                // НОВЫЙ DISCLOSURE GROUP ДЛЯ УПРАВЛЕНИЯ МОДЕЛЯМИ
+                DisclosureGroup("Manage Models") { manageModelsContent }
             }
             .padding()
         }
+    }
+    
+    // MARK: - Управление моделями (НОВЫЙ КОМПОНЕНТ)
+    private var manageModelsContent: some View {
+        VStack(spacing: 10) {
+            if appState.loadedModels.isEmpty {
+                Text("No models loaded")
+                    .foregroundColor(.secondary)
+                    .padding()
+            } else {
+                Picker("Select Model", selection: $appState.selectedModelID) {
+                    ForEach(appState.loadedModels) { model in
+                        HStack {
+                            Text(model.name)
+                            if !model.isVisible {
+                                Image(systemName: "eye.slash")
+                            }
+                        }
+                        .tag(model.id as UUID?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity)
+                
+                if let selectedModel = appState.loadedModels.first(where: { $0.id == appState.selectedModelID }) {
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Model Info:").font(.caption.bold())
+                        Text("📏 Size: \(String(format: "%.1f", selectedModel.modelSize.x)) x \(String(format: "%.1f", selectedModel.modelSize.z)) x \(String(format: "%.1f", selectedModel.modelSize.y)) mm")
+                            .font(.caption)
+                        Text("📊 Reduction: \(String(format: "%.1f", selectedModel.optimizationReductionPercent))%")
+                            .font(.caption)
+                    }
+                    
+                    Divider()
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Position (mm):").font(.caption.bold())
+                        
+                        HStack {
+                            Text("X:")
+                                .frame(width: 25, alignment: .leading)
+                            TextField("0", value: $appState.newModelPositionX, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 60)
+                            
+                            Text("Y:")
+                                .frame(width: 25, alignment: .leading)
+                            TextField("0", value: $appState.newModelPositionY, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 60)
+                            
+                            Text("Z:")
+                                .frame(width: 25, alignment: .leading)
+                            TextField("0", value: $appState.newModelPositionZ, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 60)
+                        }
+                        
+                        HStack {
+                            Button("Update Position") {
+                                appState.updateModelPosition(
+                                    modelID: selectedModel.id,
+                                    x: appState.newModelPositionX,
+                                    y: appState.newModelPositionY,
+                                    z: appState.newModelPositionZ
+                                )
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            
+                            Button("Reset to 0") {
+                                appState.newModelPositionX = 0
+                                appState.newModelPositionY = 0
+                                appState.newModelPositionZ = 0
+                                appState.updateModelPosition(
+                                    modelID: selectedModel.id,
+                                    x: 0,
+                                    y: 0,
+                                    z: 0
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    HStack {
+                        Button(action: { appState.toggleModelVisibility(modelID: selectedModel.id) }) {
+                            Label(
+                                selectedModel.isVisible ? "Hide" : "Show",
+                                systemImage: selectedModel.isVisible ? "eye" : "eye.slash"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        
+                        Spacer()
+                        
+                        Button(action: { appState.removeModel(withID: selectedModel.id) }) {
+                            Label("Remove", systemImage: "trash")
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 5)
     }
     
     // MARK: - Центральная панель (60%)
@@ -90,45 +211,6 @@ struct ContentView: View {
         }.tabItem { Label("Analytics", systemImage: "chart.bar") }
     }
     
-    /*
-     private func analyticsContent(stats: GCodeStats) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Group {
-                Text("=== GCODE ANALYSIS ===").font(.headline)
-                Text("1. Points: Total \(stats.totalPoints), Ext \(stats.extrusionPoints), Trav \(stats.travelPoints)")
-                Text("2. Dim: W\(String(format:"%.1f", stats.width)) L\(String(format:"%.1f", stats.length)) H\(String(format:"%.1f", stats.height)) mm")
-                Text("3. Layers: \(stats.numLayers)"); Text("4. Material: \(String(format:"%.1f", stats.totalMaterial)) mm")
-                Text("5. Volume: \(String(format:"%.1f", stats.volume)) mm³")
-                Text("6. Extremes: MaxZ \(String(format:"%.1f", stats.maxZ)), MaxSpd \(String(format:"%.0f", stats.maxSpeed))")
-            }
-            
-            Divider()
-            
-            Group {
-                Text("=== EXTENDED MATH ===").font(.headline)
-                Text("7. Ext Path: \(String(format:"%.1f", stats.extrusionPathLength)) mm")
-                Text("8. Travel Path: \(String(format:"%.1f", stats.travelPathLength)) mm")
-                Text("9. Est. Time: \(String(format:"%.1f", stats.estimatedPrintTimeMin)) min")
-                Text("10. Avg Flow: \(String(format:"%.3f", stats.averageFlowRate)) mm³/mm")
-                Text("11. BBox Vol: \(String(format:"%.1f", stats.boundingBoxVolume)) mm³")
-                Text("12. XY Area: \(String(format:"%.1f", stats.xyFootprintArea)) mm²")
-                Text("13. CoM: X\(String(format:"%.1f", stats.centerOfMassX)) Y\(String(format:"%.1f", stats.centerOfMassY))")
-                Text("14. Sharp Corners: \(stats.sharpCornersCount)")
-                Text("15. Compactness: \(String(format:"%.4f", stats.modelCompactness))")
-            }
-            
-            Divider()
-            
-            Group {
-                Text("=== OPTIMIZATION ===").font(.headline)
-                Text("Original ext pts: \(stats.originalExtrusionPoints)")
-                Text("Optimized ext pts: \(stats.optimizedExtrusionPoints)")
-                Text("Reduction: \(String(format: "%.1f", stats.optimizationReductionPercent))%")
-            }
-        }
-    }
-     */
-
     private func analyticsContent(stats: GCodeStats) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("=== АНАЛИЗ GCODE ФАЙЛА ===").font(.headline)
@@ -162,36 +244,10 @@ struct ContentView: View {
             Text("Original ext pts: \(stats.originalExtrusionPoints)")
             Text("Optimized ext pts: \(stats.optimizedExtrusionPoints)")
             Text("Reduction: \(String(format: "%.1f", stats.optimizationReductionPercent))%")
-            
-            //Divider()
-            
-            /*
-             Text("8. Изменение температур по уровням (Z):").fontWeight(.semibold)
-            if stats.tempChanges.isEmpty {
-                Text("- Изменения температур не обнаружены")
-                    .foregroundColor(.secondary)
-            } else {
-                ForEach(stats.tempChanges) { t in
-                    HStack {
-                        Text("Слой \(t.layer) (Z: \(String(format: "%.1f", t.z))):")
-                        Text("\(t.command) → \(String(format: "%.0f", t.temp))°C")
-                            .foregroundColor(.blue)
-                    }
-                }
-            }
-            */
-            
-            //Divider()
-            
-            /* Text("8. Дополнительно, расшифровка управляющих кодов:").fontWeight(.semibold)
-            Text("G0/G1 - линейное перемещение\nG2/G3 - дуговое перемещение\nG28 - возврат в начало координат\nM104/M109 - температура экструдера\nM140/M190 - температура стола\nM106/M107 - система охлаждения")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.leading)*/
         }
         .padding(.horizontal, 4)
     }
-
+    
     private func formatBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
@@ -330,7 +386,6 @@ struct ContentView: View {
         panel.prompt = "Save Video"
         
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
-        // Удаляем файл, если он уже существует, иначе AVAssetWriter выдаст ошибку
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try? FileManager.default.removeItem(at: outputURL)
         }
@@ -409,19 +464,17 @@ struct ContentView: View {
                     
                     var snapshotCGImage: CGImage?
                     DispatchQueue.main.sync {
-                        if let rootNode = sceneView.scene?.rootNode.childNode(withName: "gcode", recursively: false) {
+                        if let rootNode = sceneView.scene?.rootNode.childNode(withName: "gcode_container", recursively: false) {
                             rootNode.removeAllActions()
                             rootNode.eulerAngles.y = CGFloat(angle)
                         }
                         
-                        // НАДЕЖНЫЙ СПОСОБ ПОЛУЧЕНИЯ RETINA ИЗОБРАЖЕНИЯ
                         let nsImage = sceneView.snapshot()
                         if let tiffData = nsImage.tiffRepresentation,
                            let bitmapRep = NSBitmapImageRep(data: tiffData),
                            let cgImg = bitmapRep.cgImage {
                             snapshotCGImage = cgImg
                         } else {
-                            // Запасной вариант
                             snapshotCGImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
                         }
                     }
@@ -438,7 +491,6 @@ struct ContentView: View {
                             var ciImage = CIImage(cgImage: image)
                             let sourceExtent = ciImage.extent
                             
-                            // ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ РАЗМЕРОВ (только для первого кадра)
                             if i == 0 {
                                 let imageAspect = sourceExtent.width / sourceExtent.height
                                 let videoAspect = CGFloat(width) / CGFloat(height)
@@ -453,27 +505,19 @@ struct ContentView: View {
                                 appState.log("-------------------------")
                             }
                             
-                            /* 1. Переворот по вертикали (macOS -> Video координаты)
-                            let flipTransform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -sourceExtent.height)
-                            ciImage = ciImage.transformed(by: flipTransform)
-                            */
-                            // 2. Масштабирование с сохранением пропорций (Aspect Fit)
                             let scaleX = CGFloat(width) / sourceExtent.width
                             let scaleY = CGFloat(height) / sourceExtent.height
                             let scale = min(scaleX, scaleY)
                             ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
                             
-                            // 3. Центрирование
                             let scaledExtent = ciImage.extent
                             let x = (CGFloat(width) - scaledExtent.width) / 2.0
                             let y = (CGFloat(height) - scaledExtent.height) / 2.0
                             ciImage = ciImage.transformed(by: CGAffineTransform(translationX: x, y: y))
                             
-                            // 4. Создание черного фона и наложение модели поверх него
                             let blackBackground = CIImage(color: CIColor.black).cropped(to: videoBounds)
                             let finalImage = ciImage.composited(over: blackBackground)
                             
-                            // 5. Рендеринг в буфер (всегда в полные videoBounds, обрезка исключена)
                             CVPixelBufferLockBaseAddress(buffer, [])
                             ciContext.render(finalImage, to: buffer, bounds: videoBounds, colorSpace: colorSpace)
                             CVPixelBufferUnlockBaseAddress(buffer, [])
@@ -555,7 +599,6 @@ struct CamButton: View {
 
 extension Float {
     var formattedWithSpaces: String {
-        // Тот же трюк с заменой, но завернутый в удобное свойство
         String(format: "%.2f", locale: Locale(identifier: "en_US"), self)
             .replacingOccurrences(of: ",", with: " ")
     }

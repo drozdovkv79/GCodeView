@@ -19,8 +19,6 @@ struct GCodeSceneView: NSViewRepresentable {
         view.allowsCameraControl = true
         view.autoenablesDefaultLighting = true
         view.backgroundColor = NSColor.black
-        //view.antialiasingMode = .multisampling2X
-        // 2. Включаем более продвинутый алгоритм временного сглаживания (Jittering),
         view.isJitteringEnabled = true
         
         view.scene = SCNScene()
@@ -73,7 +71,7 @@ struct GCodeSceneView: NSViewRepresentable {
         
         switch appState.cameraAction {
         case .rotate360:
-            if let rootNode = nsView.scene?.rootNode.childNode(withName: "gcode", recursively: false) {
+            if let rootNode = nsView.scene?.rootNode.childNode(withName: "gcode_container", recursively: false) {
                 rootNode.removeAllActions()
                 let action = SCNAction.rotateBy(x: 0, y: CGFloat(Float.pi * 2), z: 0, duration: 3.0)
                 rootNode.runAction(action)
@@ -105,57 +103,73 @@ struct GCodeSceneView: NSViewRepresentable {
         SCNTransaction.commit()
     }
     
+    // ОБНОВЛЕННАЯ ФУНКЦИЯ ДЛЯ ОТОБРАЖЕНИЯ НЕСКОЛЬКИХ МОДЕЛЕЙ
     private func rebuildScene(nsView: SCNView, coordinator: GCodeSceneCoordinator) {
         let startTime = CFAbsoluteTimeGetCurrent()
-        nsView.scene?.rootNode.childNodes.filter { $0.name == "gcode" }.forEach { $0.removeFromParentNode() }
+        nsView.scene?.rootNode.childNodes.filter { $0.name == "gcode_container" }.forEach { $0.removeFromParentNode() }
         
-        guard !appState.processedLayers.isEmpty else { return }
+        guard !appState.loadedModels.isEmpty else { return }
         
-        let rootNode = SCNNode()
-        rootNode.name = "gcode"
+        let containerNode = SCNNode()
+        containerNode.name = "gcode_container"
         let material = getMaterial(preset: appState.selectedMaterial, color: NSColor(appState.modelColor))
         
-        for layerData in appState.processedLayers {
-            let sourceGeo = SCNGeometrySource(vertices: layerData.vertices)
-            let sourceNorm = SCNGeometrySource(normals: layerData.normals)
-            let element = SCNGeometryElement(indices: layerData.indices, primitiveType: .triangles)
-            let tubeGeometry = SCNGeometry(sources: [sourceGeo, sourceNorm], elements: [element])
-            tubeGeometry.materials = [material]
-            let layerNode = SCNNode(geometry: tubeGeometry)
-            layerNode.name = "layer_\(layerData.id)"
-            rootNode.addChildNode(layerNode)
+        var allModelsMinX: Float = .greatestFiniteMagnitude
+        var allModelsMaxX: Float = -.greatestFiniteMagnitude
+        var allModelsMinY: Float = .greatestFiniteMagnitude
+        var allModelsMaxY: Float = -.greatestFiniteMagnitude
+        var allModelsMinZ: Float = .greatestFiniteMagnitude
+        var allModelsMaxZ: Float = -.greatestFiniteMagnitude
+        
+        for model in appState.loadedModels where model.isVisible {
+            guard !model.processedLayers.isEmpty else { continue }
+            
+            let modelNode = SCNNode()
+            modelNode.name = "model_\(model.id.uuidString)"
+            
+            for layerData in model.processedLayers {
+                let sourceGeo = SCNGeometrySource(vertices: layerData.vertices)
+                let sourceNorm = SCNGeometrySource(normals: layerData.normals)
+                let element = SCNGeometryElement(indices: layerData.indices, primitiveType: .triangles)
+                let tubeGeometry = SCNGeometry(sources: [sourceGeo, sourceNorm], elements: [element])
+                tubeGeometry.materials = [material]
+                let layerNode = SCNNode(geometry: tubeGeometry)
+                layerNode.name = "layer_\(layerData.id)"
+                modelNode.addChildNode(layerNode)
+            }
+            
+            modelNode.position = SCNVector3(model.position.x, model.position.y, model.position.z)
+            
+            if let bbox = model.boundingBox {
+                let minX = bbox.min.x + model.position.x
+                let maxX = bbox.max.x + model.position.x
+                let minY = bbox.min.y + model.position.y
+                let maxY = bbox.max.y + model.position.y
+                let minZ = bbox.min.z + model.position.z
+                let maxZ = bbox.max.z + model.position.z
+                
+                allModelsMinX = min(allModelsMinX, minX)
+                allModelsMaxX = max(allModelsMaxX, maxX)
+                allModelsMinY = min(allModelsMinY, minY)
+                allModelsMaxY = max(allModelsMaxY, maxY)
+                allModelsMinZ = min(allModelsMinZ, minZ)
+                allModelsMaxZ = max(allModelsMaxZ, maxZ)
+            }
+            
+            containerNode.addChildNode(modelNode)
         }
         
-        // ИСПРАВЛЕНА ЦЕНТРОВКА: Основание строго на Y=0, центр по X и Z
-        if let bbox = appState.modelBoundingBox {
-            let minX = CGFloat(bbox.min.x); let maxX = CGFloat(bbox.max.x)
-            let minY = CGFloat(bbox.min.y); let maxY = CGFloat(bbox.max.y)
-            let minZ = CGFloat(bbox.min.z); let maxZ = CGFloat(bbox.max.z)
-            
-            // Локальные координаты центра модели
-            let centerX = (minX + maxX) / 2.0
-            let centerY = (minY + maxY) / 2.0
-            let centerZ = (minZ + maxZ) / 2.0
-            let halfHeight = (maxY - minY) / 2.0
-            
-            // 1. Устанавливаем позицию узла так, чтобы ГЕОМЕТРИЧЕСКИЙ ЦЕНТР модели
-            // находился в координатах X=0, Z=0 и Y=половина высоты.
-            // Это гарантирует, что низ модели будет точно на Y=0 (стол).
-            rootNode.position = SCNVector3(0, halfHeight, 0)
-            
-            // 2. Указываем pivot (ось вращения) как локальный геометрический центр.
-            rootNode.pivot = SCNMatrix4MakeTranslation(centerX, centerY, centerZ)
-            
-            let sizeX = maxX - minX
-            let sizeY = maxY - minY
-            let sizeZ = maxZ - minZ
+        nsView.scene?.rootNode.addChildNode(containerNode)
+        
+        if allModelsMinX != .greatestFiniteMagnitude {
+            let sizeX = allModelsMaxX - allModelsMinX
+            let sizeY = allModelsMaxY - allModelsMinY
+            let sizeZ = allModelsMaxZ - allModelsMinZ
             let boundingRadius = sqrt(sizeX*sizeX + sizeY*sizeY + sizeZ*sizeZ) / 2.0
             
-            coordinator.maxDimension = max(boundingRadius, 1.0)
-            coordinator.modelCenterY = halfHeight // Камера смотрит в центр высоты
+            coordinator.maxDimension = CGFloat(max(boundingRadius, 1.0))
+            coordinator.modelCenterY = CGFloat((allModelsMinY + allModelsMaxY) / 2.0)
         }
-        
-        nsView.scene?.rootNode.addChildNode(rootNode)
         
         nsView.scene?.rootNode.childNode(withName: "grid", recursively: false)?.removeFromParentNode()
         let gridNode = createGridNode(maxDimension: coordinator.maxDimension)
@@ -176,7 +190,7 @@ struct GCodeSceneView: NSViewRepresentable {
         }
         
         let endTime = CFAbsoluteTimeGetCurrent()
-        appState.log("⏱ 3D Scene Render: \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
+        appState.log("⏱ 3D Scene Render (\(appState.loadedModels.count) models): \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
     }
     
     // MARK: - Grid & Axis
@@ -197,16 +211,16 @@ struct GCodeSceneView: NSViewRepresentable {
         gridNode.addChildNode(SCNNode(geometry: gridGeo))
         
         let axisLen = maxDimension * 1.2; let axisRadius = maxDimension * 0.005; let offset = axisLen * 0.05
-        let sizeX = CGFloat(max(appState.modelSize.x, 1)); let sizeY = CGFloat(max(appState.modelSize.y, 1)); let sizeZ = CGFloat(max(appState.modelSize.z, 1))
         
         let xGeo = SCNCylinder(radius: axisRadius, height: axisLen); xGeo.materials = [axisMaterial(color: NSColor.red)]; let xAxis = SCNNode(geometry: xGeo); xAxis.eulerAngles = SCNVector3(0, 0, Float.pi/2); xAxis.position = SCNVector3(axisLen/2, 0, 0); gridNode.addChildNode(xAxis)
-        gridNode.addChildNode(textNode("X", position: SCNVector3(axisLen + offset, 0, 0), color: NSColor.red)); gridNode.addChildNode(textNode("0", position: SCNVector3(offset, 0, 0), color: NSColor.gray)); gridNode.addChildNode(textNode(String(format: "%.0f", sizeX), position: SCNVector3(axisLen + offset, -offset*2, 0), color: NSColor.gray))
+        gridNode.addChildNode(textNode("X", position: SCNVector3(axisLen + offset, 0, 0), color: NSColor.red))
+        gridNode.addChildNode(textNode("0", position: SCNVector3(offset, 0, 0), color: NSColor.gray))
         
         let yGeo = SCNCylinder(radius: axisRadius, height: axisLen); yGeo.materials = [axisMaterial(color: NSColor.green)]; let yAxis = SCNNode(geometry: yGeo); yAxis.position = SCNVector3(0, axisLen/2, 0); gridNode.addChildNode(yAxis)
-        gridNode.addChildNode(textNode("Y", position: SCNVector3(0, axisLen + offset, 0), color: NSColor.green)); gridNode.addChildNode(textNode(String(format: "%.0f", sizeY), position: SCNVector3(offset*2, axisLen + offset*2, 0), color: NSColor.gray))
+        gridNode.addChildNode(textNode("Y", position: SCNVector3(0, axisLen + offset, 0), color: NSColor.green))
         
         let zGeo = SCNCylinder(radius: axisRadius, height: axisLen); zGeo.materials = [axisMaterial(color: NSColor.blue)]; let zAxis = SCNNode(geometry: zGeo); zAxis.eulerAngles = SCNVector3(Float.pi/2, 0, 0); zAxis.position = SCNVector3(0, 0, axisLen/2); gridNode.addChildNode(zAxis)
-        gridNode.addChildNode(textNode("Z", position: SCNVector3(0, 0, axisLen + offset), color: NSColor.blue)); gridNode.addChildNode(textNode(String(format: "%.0f", sizeZ), position: SCNVector3(offset*2, 0, axisLen + offset), color: NSColor.gray))
+        gridNode.addChildNode(textNode("Z", position: SCNVector3(0, 0, axisLen + offset), color: NSColor.blue))
         
         return gridNode
     }
