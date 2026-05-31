@@ -1,705 +1,3234 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
     <head>
         <meta charset="UTF-8" />
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0, user-scalable=no"
-        />
-        <title>G-Code Viewer 3D - Web версия</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>GCodeVA — G-Code Visualizer</title>
         <style>
-            body {
+            @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap");
+
+            :root {
+                --bg: #0a0a0b;
+                --panel: #111114;
+                --panel2: #16161a;
+                --border: #222228;
+                --border2: #2a2a32;
+                --accent: #7c6af7;
+                --accent2: #4ecdc4;
+                --accent3: #f7c16a;
+                --text: #e8e8f0;
+                --text2: #8888aa;
+                --text3: #555566;
+                --red: #f05060;
+                --green: #5af078;
+                --mono: "JetBrains Mono", monospace;
+                --sans: "Syne", sans-serif;
+                --radius: 6px;
+                --sidebar: 280px;
+                --right: 300px;
+            }
+
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
                 margin: 0;
-                overflow: hidden;
-                font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+                padding: 0;
             }
-
-            /* UI панель - с прокруткой, ширина 300px */
-            #ui-panel {
-                position: absolute;
-                top: 20px;
-                left: 20px;
-                width: 300px;
-                max-height: calc(100vh - 40px);
-                background: rgba(30, 30, 40, 0.95);
-                color: #e0e0e0;
-                border-radius: 8px;
-                padding: 15px;
-                backdrop-filter: blur(10px);
-                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-                z-index: 100;
-                pointer-events: auto;
-                font-size: 13px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                overflow-y: auto;
-                transition: transform 0.3s ease;
-            }
-
-            #ui-panel.hidden {
-                transform: translateX(-340px);
-            }
-
-            #ui-panel h3 {
-                margin: 0 0 10px 0;
-                font-size: 16px;
-                color: #ff9800;
-            }
-
-            .section {
-                margin-bottom: 15px;
-                padding-bottom: 10px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-            }
-
-            .section-title {
-                font-weight: bold;
-                margin-bottom: 8px;
-                font-size: 14px;
-                color: #ff9800;
-            }
-
-            button {
-                background: #ff9800;
-                color: #1e1e28;
-                border: none;
-                padding: 6px 12px;
-                margin: 3px;
-                border-radius: 4px;
-                cursor: pointer;
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: var(--mono);
                 font-size: 12px;
-                font-weight: bold;
-                transition: all 0.2s;
+                display: flex;
+                height: 100vh;
+                overflow: hidden;
             }
 
-            button:hover {
-                background: #ffb74d;
-                transform: scale(1.02);
+            ::-webkit-scrollbar {
+                width: 4px;
+            }
+            ::-webkit-scrollbar-track {
+                background: transparent;
+            }
+            ::-webkit-scrollbar-thumb {
+                background: var(--border2);
+                border-radius: 2px;
             }
 
-            button:active {
-                transform: scale(0.98);
+            #left {
+                width: var(--sidebar);
+                min-width: 220px;
+                max-width: 350px;
+                background: var(--panel);
+                border-right: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }
+            #center {
+                flex: 1;
+                position: relative;
+                background: #000;
+            }
+            #right {
+                width: var(--right);
+                min-width: 220px;
+                max-width: 400px;
+                background: var(--panel);
+                border-left: 1px solid var(--border);
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
             }
 
-            button.secondary {
-                background: #555;
-                color: white;
-            }
-
-            button.danger {
-                background: #d32f2f;
-            }
-
-            button.danger:hover {
-                background: #f44336;
-            }
-
-            .control-group {
-                margin: 8px 0;
+            .panel-header {
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--border);
+                font-family: var(--sans);
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+                color: var(--text2);
                 display: flex;
                 align-items: center;
+                gap: 6px;
+                flex-shrink: 0;
+            }
+            .panel-header .dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: var(--accent);
+                box-shadow: 0 0 6px var(--accent);
+            }
+
+            .scroll {
+                overflow-y: auto;
+                flex: 1;
+                padding: 10px;
+                display: flex;
+                flex-direction: column;
                 gap: 8px;
             }
 
-            .control-group label {
-                width: 110px;
-                font-size: 12px;
+            .section {
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                overflow: hidden;
+            }
+            .section-header {
+                padding: 7px 10px;
+                background: var(--panel2);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                font-family: var(--sans);
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+                color: var(--text2);
+                user-select: none;
+                transition: color 0.15s;
+            }
+            .section-header:hover {
+                color: var(--text);
+            }
+            .section-header .chevron {
+                transition: transform 0.2s;
+                font-size: 8px;
+            }
+            .section.open .section-header .chevron {
+                transform: rotate(180deg);
+            }
+            .section-body {
+                display: none;
+                padding: 10px;
+                border-top: 1px solid var(--border);
+                background: var(--bg);
+            }
+            .section.open .section-body {
+                display: block;
             }
 
+            .dir-row {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                margin-bottom: 6px;
+            }
+            .dir-label {
+                flex: 1;
+                color: var(--text2);
+                font-size: 11px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .sort-tabs {
+                display: flex;
+                gap: 2px;
+                margin-bottom: 6px;
+            }
+            .sort-tab {
+                flex: 1;
+                text-align: center;
+                padding: 4px;
+                font-size: 10px;
+                cursor: pointer;
+                border: 1px solid var(--border);
+                border-radius: 3px;
+                color: var(--text3);
+                font-family: var(--mono);
+                transition: all 0.15s;
+                background: transparent;
+            }
+            .sort-tab:hover {
+                color: var(--text2);
+                border-color: var(--border2);
+            }
+            .sort-tab.active {
+                color: var(--accent);
+                border-color: var(--accent);
+                background: rgba(124, 106, 247, 0.08);
+            }
+
+            #file-list {
+                height: 200px;
+                overflow-y: auto;
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+            }
+            .file-item {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 5px 8px;
+                cursor: pointer;
+                border-bottom: 1px solid var(--border);
+                font-size: 10px;
+                transition: background 0.1s;
+            }
+            .file-item:last-child {
+                border-bottom: none;
+            }
+            .file-item:hover {
+                background: var(--panel2);
+            }
+            .file-item.selected {
+                background: rgba(124, 106, 247, 0.12);
+                border-left: 2px solid var(--accent);
+            }
+            .file-name {
+                flex: 1;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: var(--text);
+            }
+            .file-size {
+                width: 55px;
+                text-align: right;
+                color: var(--text3);
+                font-size: 9px;
+            }
+            .file-date {
+                width: 65px;
+                text-align: right;
+                color: var(--text3);
+                font-size: 9px;
+            }
+
+            .btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 5px;
+                padding: 7px 12px;
+                border-radius: var(--radius);
+                font-family: var(--mono);
+                font-size: 11px;
+                cursor: pointer;
+                border: 1px solid transparent;
+                transition: all 0.15s;
+                width: 100%;
+                font-weight: 500;
+            }
+            .btn:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+            }
+            .btn-primary {
+                background: var(--accent);
+                color: #fff;
+                border-color: var(--accent);
+            }
+            .btn-primary:hover:not(:disabled) {
+                background: #9080ff;
+                box-shadow: 0 0 12px rgba(124, 106, 247, 0.3);
+            }
+            .btn-secondary {
+                background: transparent;
+                color: var(--text2);
+                border-color: var(--border2);
+            }
+            .btn-secondary:hover:not(:disabled) {
+                color: var(--text);
+                border-color: var(--text2);
+                background: var(--panel2);
+            }
+            .btn-danger {
+                background: transparent;
+                color: var(--red);
+                border-color: rgba(240, 80, 96, 0.3);
+            }
+            .btn-danger:hover:not(:disabled) {
+                background: rgba(240, 80, 96, 0.1);
+            }
+            .btn-sm {
+                padding: 4px 8px;
+                font-size: 10px;
+                width: auto;
+            }
+
+            .progress-wrap {
+                height: 3px;
+                background: var(--border);
+                border-radius: 2px;
+                overflow: hidden;
+                margin: 4px 0;
+            }
+            .progress-fill {
+                height: 100%;
+                background: var(--accent);
+                transition: width 0.2s;
+                width: 0;
+                box-shadow: 0 0 8px var(--accent);
+            }
+
+            .cam-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 4px;
+            }
+            .cam-btn {
+                padding: 6px;
+                font-size: 10px;
+                text-align: center;
+                border: 1px solid var(--border2);
+                border-radius: 4px;
+                cursor: pointer;
+                color: var(--text2);
+                transition: all 0.15s;
+                background: transparent;
+                font-family: var(--mono);
+            }
+            .cam-btn:hover {
+                color: var(--accent);
+                border-color: var(--accent);
+            }
+
+            .mat-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 4px;
+            }
+            .mat-btn {
+                padding: 7px;
+                font-size: 10px;
+                text-align: center;
+                border: 1px solid var(--border2);
+                border-radius: 4px;
+                cursor: pointer;
+                color: var(--text2);
+                transition: all 0.15s;
+                background: transparent;
+                font-family: var(--mono);
+            }
+            .mat-btn:hover {
+                color: var(--text);
+                border-color: var(--text);
+            }
+            .mat-btn.active {
+                color: var(--accent);
+                border-color: var(--accent);
+                background: rgba(124, 106, 247, 0.1);
+            }
+
+            .param-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 8px;
+            }
+            .param-label {
+                color: var(--text2);
+                font-size: 10px;
+                white-space: nowrap;
+                min-width: 80px;
+            }
+            .param-value {
+                color: var(--accent2);
+                font-size: 10px;
+                min-width: 35px;
+                text-align: right;
+            }
             input[type="range"] {
                 flex: 1;
+                -webkit-appearance: none;
+                height: 3px;
+                background: var(--border2);
+                border-radius: 2px;
+                outline: none;
                 cursor: pointer;
             }
-
+            input[type="range"]::-webkit-slider-thumb {
+                -webkit-appearance: none;
+                width: 12px;
+                height: 12px;
+                background: var(--accent);
+                border-radius: 50%;
+                cursor: pointer;
+            }
             input[type="color"] {
-                width: 40px;
-                height: 30px;
-                border: none;
+                width: 32px;
+                height: 24px;
+                border: 1px solid var(--border2);
+                border-radius: 3px;
                 cursor: pointer;
+                padding: 2px;
+                background: var(--panel2);
+            }
+            input[type="text"],
+            input[type="number"] {
+                background: var(--panel2);
+                border: 1px solid var(--border);
+                border-radius: 3px;
+                color: var(--text);
+                font-family: var(--mono);
+                font-size: 10px;
+                padding: 4px 6px;
+                width: 60px;
+                outline: none;
+            }
+            input[type="text"]:focus,
+            input[type="number"]:focus {
+                border-color: var(--accent);
+            }
+            .divider {
+                height: 1px;
+                background: var(--border);
+                margin: 8px 0;
             }
 
-            .value-display {
-                width: 45px;
-                text-align: center;
-                font-size: 11px;
-                font-family: monospace;
-            }
-
-            .button-group {
+            .model-item {
                 display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
-                margin-top: 5px;
-            }
-
-            .status {
-                background: rgba(0, 0, 0, 0.5);
-                padding: 5px;
-                border-radius: 4px;
-                font-size: 11px;
-                font-family: monospace;
-                margin-top: 10px;
-                text-align: center;
-            }
-
-            .measure-result {
-                color: #4caf50;
-                font-weight: bold;
-            }
-
-            .file-input {
-                display: none;
-            }
-
-            .file-label {
-                background: #2196f3;
-                color: white;
-                padding: 6px 12px;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 8px;
                 border-radius: 4px;
                 cursor: pointer;
-                display: inline-block;
-                font-size: 12px;
-                font-weight: bold;
-                margin: 3px;
+                border: 1px solid var(--border);
+                margin-bottom: 4px;
+                transition: all 0.15s;
             }
-
-            .file-label:hover {
-                background: #42a5f5;
+            .model-item.selected {
+                border-color: var(--accent);
+                background: rgba(124, 106, 247, 0.08);
             }
-
-            /* Окно лога - правый нижний угол */
-            #log-panel {
-                position: absolute;
-                bottom: 20px;
-                right: 20px;
-                width: 400px;
-                max-width: calc(100vw - 40px);
-                background: rgba(0, 0, 0, 0.9);
-                border-radius: 8px;
-                padding: 10px;
-                z-index: 100;
-                font-family: "Courier New", monospace;
+            .model-item .model-name {
+                flex: 1;
+                font-size: 10px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+            .model-item .eye-btn {
+                cursor: pointer;
                 font-size: 11px;
-                border: 1px solid #ff9800;
-                transition: all 0.3s ease;
+                padding: 2px 4px;
+                border-radius: 3px;
+                border: 1px solid transparent;
+                color: var(--text3);
+                transition: all 0.15s;
+                background: none;
+            }
+            .model-item .eye-btn:hover {
+                color: var(--text);
+                border-color: var(--border2);
+            }
+            .model-item.model-hidden .model-name {
+                opacity: 0.4;
+            }
+            .pos-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr 1fr;
+                gap: 4px;
+                margin: 6px 0;
+            }
+            .pos-group label {
+                display: block;
+                font-size: 9px;
+                color: var(--text3);
+                margin-bottom: 2px;
+            }
+            .pos-group input {
+                width: 100%;
+            }
+            .model-actions {
+                display: flex;
+                gap: 4px;
+                margin-top: 6px;
             }
 
-            #log-panel.hidden {
-                transform: translateY(calc(100% - 40px));
+            #three-canvas {
+                width: 100%;
+                height: 100%;
+                display: block;
             }
 
-            #log-header {
+            #toolbar {
+                position: absolute;
+                top: 12px;
+                left: 12px;
+                right: 12px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                pointer-events: none;
+            }
+            .toolbar-pill {
+                pointer-events: all;
+                background: rgba(10, 10, 11, 0.85);
+                border: 1px solid var(--border2);
+                border-radius: 20px;
+                padding: 5px 12px;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                backdrop-filter: blur(8px);
+                font-size: 11px;
+            }
+            #model-info {
+                color: var(--text2);
+                flex: 1;
+                font-family: var(--mono);
+            }
+            #axis-toggle {
+                cursor: pointer;
+                padding: 4px 10px;
+                border-radius: 20px;
+                border: 1px solid var(--border2);
+                background: transparent;
+                color: var(--text2);
+                font-family: var(--mono);
+                font-size: 10px;
+                transition: all 0.15s;
+                pointer-events: all;
+            }
+            #axis-toggle:hover {
+                color: var(--accent2);
+                border-color: var(--accent2);
+            }
+            #axis-toggle.active {
+                color: var(--accent2);
+                border-color: var(--accent2);
+                background: rgba(78, 205, 196, 0.08);
+            }
+
+            .tabs {
+                display: flex;
+                border-bottom: 1px solid var(--border);
+                flex-shrink: 0;
+            }
+            .tab {
+                flex: 1;
+                padding: 9px;
+                text-align: center;
+                cursor: pointer;
+                font-size: 10px;
+                font-family: var(--sans);
+                font-weight: 600;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: var(--text3);
+                border-bottom: 2px solid transparent;
+                margin-bottom: -1px;
+                transition: all 0.15s;
+            }
+            .tab:hover {
+                color: var(--text2);
+            }
+            .tab.active {
+                color: var(--accent);
+                border-bottom-color: var(--accent);
+            }
+            .tab-content {
+                display: none;
+                flex: 1;
+                overflow-y: auto;
+                padding: 12px;
+            }
+            .tab-content.active {
+                display: block;
+            }
+
+            .stats-title {
+                font-family: var(--sans);
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--text);
+                margin-bottom: 4px;
+            }
+            .stats-subtitle {
+                font-size: 10px;
+                color: var(--text3);
+                margin-bottom: 10px;
+            }
+            .stat-group {
+                margin-bottom: 10px;
+            }
+            .stat-group-title {
+                font-family: var(--sans);
+                font-size: 10px;
+                font-weight: 700;
+                color: var(--accent2);
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                margin-bottom: 6px;
+            }
+            .stat-row {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 8px;
-                padding-bottom: 5px;
-                border-bottom: 1px solid #444;
-                cursor: pointer;
+                padding: 3px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.03);
             }
-
-            #log-title {
-                color: #ff9800;
-                font-weight: bold;
-                font-size: 12px;
-            }
-
-            #log-clear {
-                background: #444;
-                color: white;
-                border: none;
-                padding: 2px 8px;
+            .stat-key {
+                color: var(--text2);
                 font-size: 10px;
-                cursor: pointer;
-                border-radius: 3px;
             }
-
-            #log-clear:hover {
-                background: #666;
-            }
-
-            #log-content {
-                max-height: 200px;
-                overflow-y: auto;
-                padding: 5px;
-            }
-
-            .log-entry {
-                padding: 2px 0;
-                border-bottom: 1px solid #222;
-                font-family: monospace;
+            .stat-val {
+                color: var(--text);
                 font-size: 10px;
+                font-weight: 500;
+            }
+            .stat-val.accent {
+                color: var(--accent3);
+            }
+
+            #log-container {
+                font-size: 10px;
+                line-height: 1.7;
+            }
+            .log-line {
+                padding: 1px 0;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.02);
                 word-break: break-all;
             }
-
-            .log-error {
-                color: #ff6666;
+            .log-time {
+                color: var(--text3);
+                margin-right: 4px;
             }
-            .log-success {
-                color: #66ff66;
-            }
-            .log-info {
-                color: #66aaff;
-            }
-            .log-warning {
-                color: #ffaa66;
+            .log-msg {
+                color: var(--text2);
             }
 
-            /* Информация FPS и координаты - желтые */
-            #stats {
+            #loading-overlay {
                 position: absolute;
-                top: 20px;
-                right: 20px;
-                background: rgba(0, 0, 0, 0.7);
-                padding: 5px 10px;
-                border-radius: 4px;
-                font-family: monospace;
-                font-size: 13px;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.75);
+                display: none;
+                align-items: center;
+                justify-content: center;
+                flex-direction: column;
+                gap: 12px;
                 z-index: 100;
-                pointer-events: none;
-                color: #ffcc00;
-                font-weight: bold;
+                backdrop-filter: blur(4px);
             }
-
-            .coords {
-                position: absolute;
-                bottom: 20px;
-                left: 20px;
-                background: rgba(0, 0, 0, 0.7);
-                padding: 5px 10px;
-                border-radius: 4px;
-                font-family: monospace;
-                font-size: 12px;
-                z-index: 100;
-                pointer-events: none;
-                color: #ffcc00;
-                font-weight: bold;
+            #loading-overlay.show {
+                display: flex;
             }
-
-            #toggle-panel {
-                position: absolute;
-                top: 20px;
-                left: 320px;
-                background: rgba(30, 30, 40, 0.9);
-                border: 1px solid #ff9800;
-                padding: 5px 10px;
-                z-index: 101;
-                cursor: pointer;
-                border-radius: 4px;
-                transition: left 0.3s ease;
+            #loading-overlay .load-text {
+                font-family: var(--sans);
+                font-size: 18px;
+                font-weight: 700;
+                color: var(--accent);
             }
-
-            .progress-bar {
-                width: 100%;
-                height: 4px;
-                background: #333;
+            #loading-overlay .load-sub {
+                font-size: 11px;
+                color: var(--text2);
+            }
+            #loading-overlay .load-bar {
+                width: 240px;
+                height: 3px;
+                background: var(--border2);
                 border-radius: 2px;
                 overflow: hidden;
-                margin-top: 8px;
             }
-
-            .progress-fill {
-                width: 0%;
+            #loading-overlay .load-fill {
                 height: 100%;
-                background: #ff9800;
-                transition: width 0.3s;
+                background: var(--accent);
+                transition: width 0.1s;
+                box-shadow: 0 0 10px var(--accent);
             }
 
-            .info-box {
-                background: rgba(0, 0, 0, 0.5);
-                padding: 8px;
-                border-radius: 4px;
-                margin: 5px 0;
-                font-size: 11px;
+            #empty-state {
+                position: absolute;
+                inset: 0;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                opacity: 0.4;
+                pointer-events: none;
+            }
+            #empty-state .e-icon {
+                font-size: 40px;
+            }
+            #empty-state .e-text {
+                font-family: var(--sans);
+                font-size: 14px;
+                color: var(--text2);
+            }
+            #empty-state .e-sub {
+                font-size: 10px;
+                color: var(--text3);
+            }
+            #empty-state.hidden {
+                display: none;
             }
 
-            .info-box span {
-                color: #ff9800;
-                font-weight: bold;
-            }
-
-            @media (max-width: 768px) {
-                #ui-panel {
-                    width: 260px;
-                }
-                #toggle-panel {
-                    left: 280px;
-                }
-                #log-panel {
-                    width: calc(100vw - 40px);
-                    right: 20px;
-                }
+            #center.drag-over::after {
+                content: "";
+                position: absolute;
+                inset: 0;
+                border: 2px dashed var(--accent);
+                pointer-events: none;
+                border-radius: 0;
+                z-index: 50;
             }
         </style>
     </head>
     <body>
-        <div id="ui-panel">
-            <h3>📊 G-Code Viewer 3D</h3>
+        <!-- LEFT PANEL -->
+        <div id="left">
+            <div class="panel-header"><span class="dot"></span>GCodeVA</div>
+            <div class="scroll">
+                <div class="section open" id="sec-dir">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-dir')"
+                    >
+                        <span>&#128193; Files</span
+                        ><span class="chevron">&#9650;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="dir-row">
+                            <span class="dir-label" id="dir-label"
+                                >Drop .gcode / .nc files here</span
+                            >
+                            <button
+                                class="btn btn-secondary btn-sm"
+                                onclick="openFilePicker()"
+                            >
+                                Open
+                            </button>
+                        </div>
+                        <div class="sort-tabs">
+                            <div
+                                class="sort-tab active"
+                                data-sort="name"
+                                onclick="setSort('name')"
+                            >
+                                Name
+                            </div>
+                            <div
+                                class="sort-tab"
+                                data-sort="size"
+                                onclick="setSort('size')"
+                            >
+                                Size
+                            </div>
+                            <div
+                                class="sort-tab"
+                                data-sort="date"
+                                onclick="setSort('date')"
+                            >
+                                Date
+                            </div>
+                        </div>
+                        <div id="file-list"></div>
+                        <div
+                            style="
+                                margin-top: 8px;
+                                display: flex;
+                                flex-direction: column;
+                                gap: 5px;
+                            "
+                        >
+                            <button
+                                class="btn btn-primary"
+                                id="btn-load"
+                                onclick="loadSelectedFile()"
+                                disabled
+                            >
+                                Load Model (Replace)
+                            </button>
+                            <button
+                                class="btn btn-secondary"
+                                id="btn-add"
+                                onclick="addModel()"
+                                disabled
+                            >
+                                &#10133; Add Selected Model
+                            </button>
+                            <div
+                                class="progress-wrap"
+                                id="progress-wrap"
+                                style="display: none"
+                            >
+                                <div
+                                    class="progress-fill"
+                                    id="progress-fill"
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-            <div class="section">
-                <div class="section-title">📁 Файл</div>
-                <input
-                    type="file"
-                    id="file-input"
-                    class="file-input"
-                    accept=".gcode,.nc,.txt,.gcod"
-                />
-                <label for="file-input" class="file-label"
-                    >📂 Выбрать G-code файл</label
-                >
-                <div id="file-status" class="status">Файл не загружен</div>
-                <div
-                    class="progress-bar"
-                    id="progress-bar"
-                    style="display: none"
-                >
-                    <div class="progress-fill" id="progress-fill"></div>
+                <div class="section" id="sec-cam">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-cam')"
+                    >
+                        <span>&#127909; Camera Views</span
+                        ><span class="chevron">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="cam-grid">
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('top')"
+                            >
+                                Top
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('bottom')"
+                            >
+                                Bottom
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('front')"
+                            >
+                                Front
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('back')"
+                            >
+                                Back
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('left')"
+                            >
+                                Left
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('right')"
+                            >
+                                Right
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('iso1')"
+                            >
+                                ISO 1
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('iso2')"
+                            >
+                                ISO 2
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('iso3')"
+                            >
+                                ISO 3
+                            </button>
+                            <button
+                                class="cam-btn"
+                                onclick="setCameraView('iso4')"
+                            >
+                                ISO 4
+                            </button>
+                        </div>
+                        <div style="margin-top: 6px">
+                            <button
+                                class="btn btn-secondary"
+                                onclick="rotate360()"
+                            >
+                                &#8635; Rotate 360&deg;
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section" id="sec-export">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-export')"
+                    >
+                        <span>&#128190; Export</span
+                        ><span class="chevron">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <button
+                            class="btn btn-secondary"
+                            id="btn-analytics"
+                            onclick="calculateAnalytics()"
+                            style="margin-bottom: 6px"
+                            disabled
+                        >
+                            &#128202; Calculate Analytics
+                        </button>
+                        <div class="divider"></div>
+                        <div class="param-row">
+                            <span class="param-label">W:</span>
+                            <input
+                                type="number"
+                                id="vid-w"
+                                value="1920"
+                                style="width: 70px"
+                            />
+                            <span class="param-label" style="min-width: 20px"
+                                >H:</span
+                            >
+                            <input
+                                type="number"
+                                id="vid-h"
+                                value="1080"
+                                style="width: 70px"
+                            />
+                        </div>
+                        <button
+                            class="btn btn-secondary"
+                            id="btn-video"
+                            onclick="exportVideo()"
+                            disabled
+                        >
+                            &#127909; Record 360&deg; Video (WebM)
+                        </button>
+                        <div style="margin-top: 5px">
+                            <button
+                                class="btn btn-secondary"
+                                id="btn-photos"
+                                onclick="savePhotos()"
+                                disabled
+                            >
+                                &#128248; Save 10 View Photos
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section" id="sec-mat">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-mat')"
+                    >
+                        <span>&#128302; Materials</span
+                        ><span class="chevron">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="mat-grid" id="mat-grid">
+                            <button
+                                class="mat-btn active"
+                                data-mat="matte"
+                                onclick="setMaterial('matte')"
+                            >
+                                Matte
+                            </button>
+                            <button
+                                class="mat-btn"
+                                data-mat="plastic"
+                                onclick="setMaterial('plastic')"
+                            >
+                                Plastic
+                            </button>
+                            <button
+                                class="mat-btn"
+                                data-mat="steel"
+                                onclick="setMaterial('steel')"
+                            >
+                                Steel
+                            </button>
+                            <button
+                                class="mat-btn"
+                                data-mat="glass"
+                                onclick="setMaterial('glass')"
+                            >
+                                Glass
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section" id="sec-params">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-params')"
+                    >
+                        <span>&#9881;&#65039; Parameters</span
+                        ><span class="chevron">&#9660;</span>
+                    </div>
+                    <div class="section-body">
+                        <div class="param-row">
+                            <span class="param-label">Tube &#216; (mm)</span>
+                            <input
+                                type="range"
+                                id="tube-slider"
+                                min="0.5"
+                                max="10"
+                                step="0.5"
+                                value="6"
+                                oninput="
+                                    document.getElementById(
+                                        'tube-val',
+                                    ).textContent = parseFloat(
+                                        this.value,
+                                    ).toFixed(1)
+                                "
+                            />
+                            <span class="param-value" id="tube-val">6.0</span>
+                        </div>
+                        <button
+                            class="btn btn-secondary btn-sm"
+                            onclick="applyDiameter()"
+                            style="width: 100%; margin-bottom: 10px"
+                        >
+                            Apply Diameter
+                        </button>
+                        <div class="param-row">
+                            <span class="param-label">Color</span>
+                            <input
+                                type="color"
+                                id="color-picker"
+                                value="#e9e5ce"
+                                style="flex: 1; height: 28px; width: auto"
+                            />
+                        </div>
+                        <button
+                            class="btn btn-secondary btn-sm"
+                            onclick="applyColor()"
+                            style="width: 100%; margin-bottom: 10px"
+                        >
+                            Apply Color
+                        </button>
+                        <div class="divider"></div>
+                        <div class="param-row">
+                            <span class="param-label">Collinear &deg;</span>
+                            <input
+                                type="range"
+                                id="collinear-slider"
+                                min="0"
+                                max="30"
+                                step="1"
+                                value="5"
+                                oninput="
+                                    document.getElementById(
+                                        'col-val',
+                                    ).textContent =
+                                        parseFloat(this.value).toFixed(1) + '°'
+                                "
+                            />
+                            <span class="param-value" id="col-val"
+                                >5.0&deg;</span
+                            >
+                        </div>
+                        <div
+                            style="
+                                font-size: 9px;
+                                color: var(--text3);
+                                margin-bottom: 6px;
+                            "
+                        >
+                            Lower = more detail, Higher = faster
+                        </div>
+                        <button
+                            class="btn btn-secondary btn-sm"
+                            onclick="applyCollinear()"
+                            style="width: 100%"
+                        >
+                            Apply Collinear
+                        </button>
+                    </div>
+                </div>
+
+                <div class="section" id="sec-models">
+                    <div
+                        class="section-header"
+                        onclick="toggleSection('sec-models')"
+                    >
+                        <span>&#128193; Manage Models</span
+                        ><span class="chevron">&#9660;</span>
+                    </div>
+                    <div class="section-body" id="models-panel">
+                        <div
+                            style="
+                                color: var(--text3);
+                                font-size: 10px;
+                                padding: 8px 0;
+                            "
+                        >
+                            No models loaded
+                        </div>
+                    </div>
                 </div>
             </div>
+        </div>
 
-            <div class="section">
-                <div class="section-title">📐 Размеры модели</div>
-                <div class="info-box" id="model-dimensions">
-                    <span>📏 Длина (X):</span> — мм<br />
-                    <span>📐 Ширина (Y):</span> — мм<br />
-                    <span>📏 Высота (Z):</span> — мм
-                </div>
-                <div class="info-box" id="model-stats">
-                    <span>🔘 Точек:</span> —<br />
-                    <span>🧵 Филамента:</span> — мм
-                </div>
+        <!-- CENTER -->
+        <div
+            id="center"
+            ondragover="
+                event.preventDefault();
+                this.classList.add('drag-over');
+            "
+            ondragleave="this.classList.remove('drag-over')"
+            ondrop="handleDrop(event)"
+        >
+            <canvas id="three-canvas"></canvas>
+
+            <div id="empty-state">
+                <div class="e-icon">&#11041;</div>
+                <div class="e-text">No model loaded</div>
+                <div class="e-sub">Open or drop a .gcode file</div>
             </div>
 
-            <div class="section">
-                <div class="section-title">🎨 Внешний вид</div>
-                <div class="control-group">
-                    <label>Диаметр трубки:</label>
-                    <input
-                        type="range"
-                        id="thickness-slider"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value="5"
-                    />
-                    <span id="thickness-value" class="value-display">3.0</span>
-                </div>
-                <div class="control-group">
-                    <label>Цвет модели:</label>
-                    <input type="color" id="color-picker" value="#c4a882" />
-                </div>
-                <div class="control-group">
-                    <label>Прозрачность:</label>
-                    <input
-                        type="range"
-                        id="opacity-slider"
-                        min="0"
-                        max="100"
-                        step="1"
-                        value="100"
-                    />
-                    <span id="opacity-value" class="value-display">100%</span>
-                </div>
-                <div class="control-group">
-                    <label>Цвет фона:</label>
-                    <input type="color" id="bg-color" value="#1a1a2e" />
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">🎨 Материалы модели</div>
-                <div class="button-group" id="materials-group">
-                    <button id="mat-lambert" style="background: #555">
-                        Lambert<br /><span style="font-size: 9px">матовая</span>
-                    </button>
-                    <button id="mat-phong" style="background: #444">
-                        Phong<br /><span style="font-size: 9px"
-                            >легкий блеск</span
-                        >
-                    </button>
-                    <button id="mat-standard" style="background: #333">
-                        Standard<br /><span style="font-size: 9px"
-                            >физический</span
-                        >
-                    </button>
-                    <button id="mat-physical" style="background: #222">
-                        Physical<br /><span style="font-size: 9px"
-                            >продвинутый</span
-                        >
-                    </button>
-                    <button id="mat-normal" style="background: #555">
-                        Normal<br /><span style="font-size: 9px">радужный</span>
-                    </button>
-                    <button id="mat-emissive" style="background: #444">
-                        Emissive<br /><span style="font-size: 9px"
-                            >свечение</span
-                        >
-                    </button>
-                    <button id="mat-stone" style="background: #666">
-                        Stone<br /><span style="font-size: 9px"
-                            >камень/бетон</span
-                        >
-                    </button>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">🔧 Anti-aliasing</div>
-                <div class="button-group">
-                    <button id="aa-off">Off</button>
-                    <button id="aa-2">2x</button>
-                    <button id="aa-4">4x</button>
-                    <button id="aa-8">8x</button>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">💡 Управление освещением</div>
-                <div class="control-group">
-                    <label>Ambient яркость:</label>
-                    <input
-                        type="range"
-                        id="ambient-intensity"
-                        min="0"
-                        max="1.5"
-                        step="0.01"
-                        value="0.6"
-                    />
-                    <span id="ambient-value" class="value-display">0.60</span>
-                </div>
-                <div class="control-group">
-                    <label>Свет 1 (Y/высота):</label>
-                    <input
-                        type="range"
-                        id="light1-height"
-                        min="500"
-                        max="10000"
-                        step="100"
-                        value="4000"
-                    />
-                    <span id="light1-height-value" class="value-display"
-                        >4000</span
+            <div id="toolbar">
+                <div class="toolbar-pill" style="flex: 1">
+                    <span id="model-info" style="color: var(--text3)"
+                        >Ready — drop a .gcode file</span
                     >
                 </div>
-                <div class="control-group">
-                    <label>Свет 1 (X/смещение):</label>
-                    <input
-                        type="range"
-                        id="light1-x"
-                        min="-3000"
-                        max="3000"
-                        step="50"
-                        value="500"
-                    />
-                    <span id="light1-x-value" class="value-display">500</span>
-                </div>
-                <div class="control-group">
-                    <label>Яркость света 1:</label>
-                    <input
-                        type="range"
-                        id="light1-intensity"
-                        min="0"
-                        max="1.5"
-                        step="0.01"
-                        value="0.7"
-                    />
-                    <span id="light1-int-value" class="value-display"
-                        >0.70</span
-                    >
-                </div>
-                <div class="control-group">
-                    <label>Свет 2 (Y/высота):</label>
-                    <input
-                        type="range"
-                        id="light2-height"
-                        min="500"
-                        max="10000"
-                        step="100"
-                        value="3000"
-                    />
-                    <span id="light2-height-value" class="value-display"
-                        >3000</span
-                    >
-                </div>
-                <div class="control-group">
-                    <label>Свет 2 (X):</label>
-                    <input
-                        type="range"
-                        id="light2-x"
-                        min="-3000"
-                        max="3000"
-                        step="50"
-                        value="1000"
-                    />
-                    <span id="light2-x-value" class="value-display">1000</span>
-                </div>
-                <div class="control-group">
-                    <label>Свет 2 (Z):</label>
-                    <input
-                        type="range"
-                        id="light2-z"
-                        min="-3000"
-                        max="3000"
-                        step="50"
-                        value="1000"
-                    />
-                    <span id="light2-z-value" class="value-display">1000</span>
-                </div>
-                <div class="control-group">
-                    <label>Яркость света 2:</label>
-                    <input
-                        type="range"
-                        id="light2-intensity"
-                        min="0"
-                        max="1.5"
-                        step="0.01"
-                        value="0.6"
-                    />
-                    <span id="light2-int-value" class="value-display"
-                        >0.60</span
-                    >
-                </div>
-                <div class="control-group">
-                    <label>Свет 3 (Y/высота):</label>
-                    <input
-                        type="range"
-                        id="light3-height"
-                        min="500"
-                        max="10000"
-                        step="100"
-                        value="3000"
-                    />
-                    <span id="light3-height-value" class="value-display"
-                        >3000</span
-                    >
-                </div>
-                <div class="control-group">
-                    <label>Свет 3 (X):</label>
-                    <input
-                        type="range"
-                        id="light3-x"
-                        min="-3000"
-                        max="3000"
-                        step="50"
-                        value="-1000"
-                    />
-                    <span id="light3-x-value" class="value-display">-1000</span>
-                </div>
-                <div class="control-group">
-                    <label>Свет 3 (Z):</label>
-                    <input
-                        type="range"
-                        id="light3-z"
-                        min="-3000"
-                        max="3000"
-                        step="50"
-                        value="-1000"
-                    />
-                    <span id="light3-z-value" class="value-display">-1000</span>
-                </div>
-                <div class="control-group">
-                    <label>Яркость света 3:</label>
-                    <input
-                        type="range"
-                        id="light3-intensity"
-                        min="0"
-                        max="1.5"
-                        step="0.01"
-                        value="0.5"
-                    />
-                    <span id="light3-int-value" class="value-display"
-                        >0.50</span
-                    >
-                </div>
-                <button
-                    id="apply-lights-btn"
-                    style="width: 100%; margin-top: 8px"
-                >
-                    💡 Применить освещение
+                <button id="axis-toggle" class="active" onclick="toggleAxis()">
+                    Grid / Axis
                 </button>
             </div>
 
-            <div class="section">
-                <div class="section-title">🎥 Камера</div>
-                <div class="button-group">
-                    <button id="cam-front">Front</button>
-                    <button id="cam-back">Back</button>
-                    <button id="cam-left">Left</button>
-                    <button id="cam-right">Right</button>
-                    <button id="cam-top">Top</button>
-                    <button id="cam-bottom">Bottom</button>
-                    <button id="cam-iso">ISO</button>
-                    <button id="cam-reset">Сброс</button>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">📏 Измерения</div>
-                <div class="button-group">
-                    <button id="measure-btn" class="secondary">
-                        🔍 Измерить
-                    </button>
-                    <button id="reset-measure-btn" class="secondary" disabled>
-                        ✖ Сбросить
-                    </button>
-                </div>
-                <div id="measure-result" class="status measure-result">
-                    Расстояние: —
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">✂ Сечение модели</div>
-                <div class="button-group">
-                    <button id="show-plane-btn">1️⃣ Показать плоскость</button>
-                    <button id="clip-right-btn" disabled>
-                        2️⃣ Рассечь справа
-                    </button>
-                    <button id="clip-left-btn" disabled>
-                        3️⃣ Рассечь слева
-                    </button>
-                    <button id="hide-plane-btn" disabled>
-                        4️⃣ Скрыть плоскость
-                    </button>
-                    <button id="reset-section-btn" class="danger">
-                        5️⃣ Сбросить сечение
-                    </button>
-                </div>
-            </div>
-
-            <div class="section">
-                <div class="section-title">📸 Скриншот</div>
-                <div class="button-group">
-                    <button id="screenshot-btn">📷 Сохранить снимок</button>
+            <div id="loading-overlay">
+                <div class="load-text" id="load-title">Parsing GCode</div>
+                <div class="load-sub" id="load-sub">Reading file...</div>
+                <div class="load-bar">
+                    <div
+                        class="load-fill"
+                        id="load-fill"
+                        style="width: 0%"
+                    ></div>
                 </div>
             </div>
         </div>
 
-        <button id="toggle-panel">◀</button>
-
-        <div id="log-panel">
-            <div id="log-header">
-                <span id="log-title">📋 Лог сообщений</span>
-                <button id="log-clear">Очистить</button>
-            </div>
-            <div id="log-content">
-                <div class="log-entry log-info">
-                    🔧 Приложение запущено. Готов к работе.
+        <!-- RIGHT PANEL -->
+        <div id="right">
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('analytics')">
+                    Analytics
                 </div>
+                <div class="tab" onclick="switchTab('log')">Log</div>
+            </div>
+            <div class="tab-content active" id="tab-analytics">
+                <div
+                    style="
+                        color: var(--text3);
+                        font-size: 10px;
+                        padding: 20px 0;
+                        text-align: center;
+                    "
+                >
+                    Load a model to see analytics
+                </div>
+            </div>
+            <div class="tab-content" id="tab-log">
+                <div id="log-container"></div>
             </div>
         </div>
 
-        <div id="stats">⚡ Инициализация...</div>
-        <div id="coords" class="coords">📌 X: -- | Y: -- | Z: --</div>
+        <input
+            type="file"
+            id="file-input"
+            multiple
+            accept=".gcode"
+            style="display: none"
+            onchange="handleFileInput(this.files)"
+        />
 
-        <script type="importmap">
-            {
-                "imports": {
-                    "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
-                    "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+        <script>
+            // ─── THREE.JS loaded from CDN ───
+        </script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+        <script>
+            // OrbitControls inline (r128 compatible)
+            (function () {
+                THREE.OrbitControls = function (object, domElement) {
+                    this.object = object;
+                    this.domElement = domElement || document;
+                    this.enabled = true;
+                    this.target = new THREE.Vector3();
+                    this.minDistance = 0;
+                    this.maxDistance = Infinity;
+                    this.minPolarAngle = 0;
+                    this.maxPolarAngle = Math.PI;
+                    this.minAzimuthAngle = -Infinity;
+                    this.maxAzimuthAngle = Infinity;
+                    this.enableDamping = false;
+                    this.dampingFactor = 0.05;
+                    this.enableZoom = true;
+                    this.zoomSpeed = 1.0;
+                    this.enableRotate = true;
+                    this.rotateSpeed = 1.0;
+                    this.enablePan = true;
+                    this.panSpeed = 1.0;
+                    this.screenSpacePanning = true;
+                    this.keyPanSpeed = 7.0;
+                    this.autoRotate = false;
+                    this.autoRotateSpeed = 2.0;
+
+                    var scope = this;
+                    var STATE = {
+                        NONE: -1,
+                        ROTATE: 0,
+                        DOLLY: 1,
+                        PAN: 2,
+                        TOUCH_ROTATE: 3,
+                        TOUCH_PAN: 4,
+                        TOUCH_DOLLY_PAN: 5,
+                        TOUCH_DOLLY_ROTATE: 6,
+                    };
+                    var state = STATE.NONE;
+                    var EPS = 0.000001;
+                    var spherical = new THREE.Spherical();
+                    var sphericalDelta = new THREE.Spherical();
+                    var scale = 1;
+                    var panOffset = new THREE.Vector3();
+                    var zoomChanged = false;
+                    var rotateStart = new THREE.Vector2();
+                    var rotateEnd = new THREE.Vector2();
+                    var rotateDelta = new THREE.Vector2();
+                    var panStart = new THREE.Vector2();
+                    var panEnd = new THREE.Vector2();
+                    var panDelta = new THREE.Vector2();
+                    var dollyStart = new THREE.Vector2();
+                    var dollyEnd = new THREE.Vector2();
+                    var dollyDelta = new THREE.Vector2();
+
+                    function getAutoRotationAngle() {
+                        return (
+                            ((2 * Math.PI) / 60 / 60) * scope.autoRotateSpeed
+                        );
+                    }
+                    function getZoomScale() {
+                        return Math.pow(0.95, scope.zoomSpeed);
+                    }
+                    function rotateLeft(angle) {
+                        sphericalDelta.theta -= angle;
+                    }
+                    function rotateUp(angle) {
+                        sphericalDelta.phi -= angle;
+                    }
+
+                    var panLeftV = new THREE.Vector3();
+                    function panLeft(distance, objectMatrix) {
+                        panLeftV.setFromMatrixColumn(objectMatrix, 0);
+                        panLeftV.multiplyScalar(-distance);
+                        panOffset.add(panLeftV);
+                    }
+                    var panUpV = new THREE.Vector3();
+                    function panUp(distance, objectMatrix) {
+                        if (scope.screenSpacePanning) {
+                            panUpV.setFromMatrixColumn(objectMatrix, 1);
+                        } else {
+                            panUpV.setFromMatrixColumn(objectMatrix, 0);
+                            panUpV.crossVectors(scope.object.up, panUpV);
+                        }
+                        panUpV.multiplyScalar(distance);
+                        panOffset.add(panUpV);
+                    }
+                    var panOffset2 = new THREE.Vector3();
+                    var pan = function (deltaX, deltaY) {
+                        var el = scope.domElement;
+                        if (scope.object.isPerspectiveCamera) {
+                            var pos = scope.object.position;
+                            panOffset2.copy(pos).sub(scope.target);
+                            var targetDist = panOffset2.length();
+                            targetDist *= Math.tan(
+                                ((scope.object.fov / 2) * Math.PI) / 180.0,
+                            );
+                            panLeft(
+                                (2 * deltaX * targetDist) / el.clientHeight,
+                                scope.object.matrix,
+                            );
+                            panUp(
+                                (2 * deltaY * targetDist) / el.clientHeight,
+                                scope.object.matrix,
+                            );
+                        } else {
+                            panLeft(
+                                (deltaX *
+                                    (scope.object.right - scope.object.left)) /
+                                    scope.object.zoom /
+                                    el.clientWidth,
+                                scope.object.matrix,
+                            );
+                            panUp(
+                                (deltaY *
+                                    (scope.object.top - scope.object.bottom)) /
+                                    scope.object.zoom /
+                                    el.clientHeight,
+                                scope.object.matrix,
+                            );
+                        }
+                    };
+
+                    function dollyIn(dollyScale) {
+                        if (scope.object.isPerspectiveCamera)
+                            scale /= dollyScale;
+                        else {
+                            scope.object.zoom = Math.max(
+                                scope.minZoom || 0,
+                                Math.min(
+                                    scope.maxZoom || Infinity,
+                                    scope.object.zoom * dollyScale,
+                                ),
+                            );
+                            scope.object.updateProjectionMatrix();
+                            zoomChanged = true;
+                        }
+                    }
+                    function dollyOut(dollyScale) {
+                        if (scope.object.isPerspectiveCamera)
+                            scale *= dollyScale;
+                        else {
+                            scope.object.zoom = Math.max(
+                                scope.minZoom || 0,
+                                Math.min(
+                                    scope.maxZoom || Infinity,
+                                    scope.object.zoom / dollyScale,
+                                ),
+                            );
+                            scope.object.updateProjectionMatrix();
+                            zoomChanged = true;
+                        }
+                    }
+
+                    this.update = (function () {
+                        var offset = new THREE.Vector3();
+                        var quat = new THREE.Quaternion().setFromUnitVectors(
+                            object.up,
+                            new THREE.Vector3(0, 1, 0),
+                        );
+                        var quatInverse = quat.clone().invert();
+                        var lastPosition = new THREE.Vector3();
+                        var lastQuaternion = new THREE.Quaternion();
+                        return function update() {
+                            var position = scope.object.position;
+                            offset.copy(position).sub(scope.target);
+                            offset.applyQuaternion(quat);
+                            spherical.setFromVector3(offset);
+                            if (scope.autoRotate && state === STATE.NONE)
+                                rotateLeft(getAutoRotationAngle());
+                            if (scope.enableDamping) {
+                                spherical.theta +=
+                                    sphericalDelta.theta * scope.dampingFactor;
+                                spherical.phi +=
+                                    sphericalDelta.phi * scope.dampingFactor;
+                            } else {
+                                spherical.theta += sphericalDelta.theta;
+                                spherical.phi += sphericalDelta.phi;
+                            }
+                            spherical.theta = Math.max(
+                                scope.minAzimuthAngle,
+                                Math.min(
+                                    scope.maxAzimuthAngle,
+                                    spherical.theta,
+                                ),
+                            );
+                            spherical.phi = Math.max(
+                                scope.minPolarAngle,
+                                Math.min(scope.maxPolarAngle, spherical.phi),
+                            );
+                            spherical.makeSafe();
+                            spherical.radius *= scale;
+                            spherical.radius = Math.max(
+                                scope.minDistance,
+                                Math.min(scope.maxDistance, spherical.radius),
+                            );
+                            if (scope.enableDamping)
+                                scope.target.addScaledVector(
+                                    panOffset,
+                                    scope.dampingFactor,
+                                );
+                            else scope.target.add(panOffset);
+                            offset.setFromSpherical(spherical);
+                            offset.applyQuaternion(quatInverse);
+                            position.copy(scope.target).add(offset);
+                            scope.object.lookAt(scope.target);
+                            if (scope.enableDamping) {
+                                sphericalDelta.theta *= 1 - scope.dampingFactor;
+                                sphericalDelta.phi *= 1 - scope.dampingFactor;
+                                panOffset.multiplyScalar(
+                                    1 - scope.dampingFactor,
+                                );
+                            } else {
+                                sphericalDelta.set(0, 0, 0);
+                                panOffset.set(0, 0, 0);
+                            }
+                            scale = 1;
+                            if (
+                                zoomChanged ||
+                                lastPosition.distanceToSquared(
+                                    scope.object.position,
+                                ) > EPS ||
+                                8 *
+                                    (1 -
+                                        lastQuaternion.dot(
+                                            scope.object.quaternion,
+                                        )) >
+                                    EPS
+                            ) {
+                                lastPosition.copy(scope.object.position);
+                                lastQuaternion.copy(scope.object.quaternion);
+                                zoomChanged = false;
+                                return true;
+                            }
+                            return false;
+                        };
+                    })();
+
+                    this.dispose = function () {
+                        scope.domElement.removeEventListener(
+                            "contextmenu",
+                            onContextMenu,
+                        );
+                        scope.domElement.removeEventListener(
+                            "mousedown",
+                            onMouseDown,
+                        );
+                        scope.domElement.removeEventListener(
+                            "wheel",
+                            onMouseWheel,
+                        );
+                        scope.domElement.removeEventListener(
+                            "touchstart",
+                            onTouchStart,
+                        );
+                        scope.domElement.removeEventListener(
+                            "touchend",
+                            onTouchEnd,
+                        );
+                        scope.domElement.removeEventListener(
+                            "touchmove",
+                            onTouchMove,
+                        );
+                        document.removeEventListener("mousemove", onMouseMove);
+                        document.removeEventListener("mouseup", onMouseUp);
+                    };
+
+                    function onMouseDown(event) {
+                        if (!scope.enabled) return;
+                        event.preventDefault();
+                        if (event.button === 0) {
+                            if (!scope.enableRotate) return;
+                            rotateStart.set(event.clientX, event.clientY);
+                            state = STATE.ROTATE;
+                        } else if (event.button === 1) {
+                            if (!scope.enableZoom) return;
+                            dollyStart.set(event.clientX, event.clientY);
+                            state = STATE.DOLLY;
+                        } else if (event.button === 2) {
+                            if (!scope.enablePan) return;
+                            panStart.set(event.clientX, event.clientY);
+                            state = STATE.PAN;
+                        }
+                        if (state !== STATE.NONE) {
+                            document.addEventListener("mousemove", onMouseMove);
+                            document.addEventListener("mouseup", onMouseUp);
+                        }
+                    }
+
+                    function onMouseMove(event) {
+                        if (!scope.enabled) return;
+                        event.preventDefault();
+                        if (state === STATE.ROTATE) {
+                            if (!scope.enableRotate) return;
+                            rotateEnd.set(event.clientX, event.clientY);
+                            rotateDelta
+                                .subVectors(rotateEnd, rotateStart)
+                                .multiplyScalar(scope.rotateSpeed);
+                            var el = scope.domElement;
+                            rotateLeft(
+                                (2 * Math.PI * rotateDelta.x) / el.clientHeight,
+                            );
+                            rotateUp(
+                                (2 * Math.PI * rotateDelta.y) / el.clientHeight,
+                            );
+                            rotateStart.copy(rotateEnd);
+                        } else if (state === STATE.DOLLY) {
+                            if (!scope.enableZoom) return;
+                            dollyEnd.set(event.clientX, event.clientY);
+                            dollyDelta.subVectors(dollyEnd, dollyStart);
+                            if (dollyDelta.y > 0) dollyIn(getZoomScale());
+                            else if (dollyDelta.y < 0) dollyOut(getZoomScale());
+                            dollyStart.copy(dollyEnd);
+                        } else if (state === STATE.PAN) {
+                            if (!scope.enablePan) return;
+                            panEnd.set(event.clientX, event.clientY);
+                            panDelta
+                                .subVectors(panEnd, panStart)
+                                .multiplyScalar(scope.panSpeed);
+                            pan(panDelta.x, panDelta.y);
+                            panStart.copy(panEnd);
+                        }
+                    }
+
+                    function onMouseUp() {
+                        document.removeEventListener("mousemove", onMouseMove);
+                        document.removeEventListener("mouseup", onMouseUp);
+                        state = STATE.NONE;
+                    }
+                    function onMouseWheel(event) {
+                        if (
+                            !scope.enabled ||
+                            !scope.enableZoom ||
+                            (state !== STATE.NONE && state !== STATE.ROTATE)
+                        )
+                            return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (event.deltaY < 0) dollyOut(getZoomScale());
+                        else if (event.deltaY > 0) dollyIn(getZoomScale());
+                    }
+
+                    var touchesArr = [];
+                    function onTouchStart(event) {
+                        if (!scope.enabled) return;
+                        event.preventDefault();
+                        touchesArr = Array.from(event.touches);
+                        if (touchesArr.length === 1) {
+                            rotateStart.set(
+                                touchesArr[0].pageX,
+                                touchesArr[0].pageY,
+                            );
+                            state = STATE.TOUCH_ROTATE;
+                        } else if (touchesArr.length === 2) {
+                            var dx = touchesArr[0].pageX - touchesArr[1].pageX,
+                                dy = touchesArr[0].pageY - touchesArr[1].pageY;
+                            dollyStart.set(0, Math.sqrt(dx * dx + dy * dy));
+                            var x =
+                                    0.5 *
+                                    (touchesArr[0].pageX + touchesArr[1].pageX),
+                                y =
+                                    0.5 *
+                                    (touchesArr[0].pageY + touchesArr[1].pageY);
+                            panStart.set(x, y);
+                            state = STATE.TOUCH_DOLLY_PAN;
+                        }
+                    }
+                    function onTouchMove(event) {
+                        if (!scope.enabled) return;
+                        event.preventDefault();
+                        touchesArr = Array.from(event.touches);
+                        if (
+                            touchesArr.length === 1 &&
+                            state === STATE.TOUCH_ROTATE
+                        ) {
+                            rotateEnd.set(
+                                touchesArr[0].pageX,
+                                touchesArr[0].pageY,
+                            );
+                            rotateDelta
+                                .subVectors(rotateEnd, rotateStart)
+                                .multiplyScalar(scope.rotateSpeed);
+                            var el = scope.domElement;
+                            rotateLeft(
+                                (2 * Math.PI * rotateDelta.x) / el.clientHeight,
+                            );
+                            rotateUp(
+                                (2 * Math.PI * rotateDelta.y) / el.clientHeight,
+                            );
+                            rotateStart.copy(rotateEnd);
+                        } else if (
+                            touchesArr.length === 2 &&
+                            state === STATE.TOUCH_DOLLY_PAN
+                        ) {
+                            var dx = touchesArr[0].pageX - touchesArr[1].pageX,
+                                dy = touchesArr[0].pageY - touchesArr[1].pageY;
+                            dollyEnd.set(0, Math.sqrt(dx * dx + dy * dy));
+                            dollyDelta.set(
+                                0,
+                                Math.pow(
+                                    dollyEnd.y / dollyStart.y,
+                                    scope.zoomSpeed,
+                                ),
+                            );
+                            dollyIn(dollyDelta.y);
+                            dollyStart.copy(dollyEnd);
+                            var x =
+                                    0.5 *
+                                    (touchesArr[0].pageX + touchesArr[1].pageX),
+                                y =
+                                    0.5 *
+                                    (touchesArr[0].pageY + touchesArr[1].pageY);
+                            panEnd.set(x, y);
+                            panDelta
+                                .subVectors(panEnd, panStart)
+                                .multiplyScalar(scope.panSpeed);
+                            pan(panDelta.x, panDelta.y);
+                            panStart.copy(panEnd);
+                        }
+                    }
+                    function onTouchEnd() {
+                        state = STATE.NONE;
+                    }
+                    function onContextMenu(event) {
+                        if (!scope.enabled) return;
+                        event.preventDefault();
+                    }
+
+                    scope.domElement.addEventListener(
+                        "contextmenu",
+                        onContextMenu,
+                    );
+                    scope.domElement.addEventListener("mousedown", onMouseDown);
+                    scope.domElement.addEventListener("wheel", onMouseWheel, {
+                        passive: false,
+                    });
+                    scope.domElement.addEventListener(
+                        "touchstart",
+                        onTouchStart,
+                        { passive: false },
+                    );
+                    scope.domElement.addEventListener("touchend", onTouchEnd);
+                    scope.domElement.addEventListener(
+                        "touchmove",
+                        onTouchMove,
+                        { passive: false },
+                    );
+
+                    this.update();
+                };
+            })();
+        </script>
+        <script>
+            // ════════════════════════════════════════
+            //  STATE
+            // ════════════════════════════════════════
+            var appState = {
+                fileItems: [],
+                sortOrder: "name",
+                selectedFileIndex: -1,
+                loadedModels: [],
+                selectedModelID: null,
+                tubeDiameter: 6.0,
+                modelColor: "#e9e5ce",
+                material: "matte",
+                collinearAngle: 5.0,
+                showAxis: true,
+                stats: null,
+                isLoading: false,
+            };
+
+            // ════════════════════════════════════════
+            //  THREE.JS SETUP
+            // ════════════════════════════════════════
+            var canvas = document.getElementById("three-canvas");
+            var renderer = new THREE.WebGLRenderer({
+                canvas: canvas,
+                antialias: true,
+                logarithmicDepthBuffer: true,
+            });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+
+            var scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            var camera = new THREE.PerspectiveCamera(45, 1, 0.5, 500000);
+            camera.position.set(100, 100, 100);
+
+            var controls = new THREE.OrbitControls(camera, canvas);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.08;
+            controls.screenSpacePanning = false;
+
+            // Lighting
+            var am1 = scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+            var dl1 = new THREE.DirectionalLight(0xffffff, 0.9);
+            dl1.position.set(300, 1500, 1000);
+            scene.add(dl1);
+            //var dl2 = new THREE.DirectionalLight(0xffffff, 0.7);
+            //dl2.position.set(40, 3500, 0);
+            //scene.add(dl2);
+
+            var gcodeContainer = new THREE.Group();
+            gcodeContainer.name = "gcode_container";
+            scene.add(gcodeContainer);
+
+            var gridGroup = null;
+            var maxDimension = 100;
+            var modelCenterY = 0;
+            var rotAnim = null;
+
+            function resizeRenderer() {
+                var c = document.getElementById("center");
+                var w = c.clientWidth,
+                    h = c.clientHeight;
+                renderer.setSize(w, h);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+            }
+            resizeRenderer();
+            window.addEventListener("resize", resizeRenderer);
+
+            (function animLoop() {
+                requestAnimationFrame(animLoop);
+                controls.update();
+                renderer.render(scene, camera);
+            })();
+
+            // ════════════════════════════════════════
+            //  LOGGING
+            // ════════════════════════════════════════
+            function log(msg) {
+                var now = new Date();
+                var time = now.toTimeString().slice(0, 8);
+                var container = document.getElementById("log-container");
+                var line = document.createElement("div");
+                line.className = "log-line";
+                line.innerHTML =
+                    '<span class="log-time">[' +
+                    time +
+                    ']</span><span class="log-msg">' +
+                    msg +
+                    "</span>";
+                container.appendChild(line);
+                container.scrollTop = container.scrollHeight;
+            }
+
+            // ════════════════════════════════════════
+            //  SECTIONS
+            // ════════════════════════════════════════
+            function toggleSection(id) {
+                var el = document.getElementById(id);
+                el.classList.toggle("open");
+                var ch = el.querySelector(".chevron");
+                ch.innerHTML = el.classList.contains("open")
+                    ? "&#9650;"
+                    : "&#9660;";
+            }
+
+            // ════════════════════════════════════════
+            //  FILE MANAGEMENT
+            // ════════════════════════════════════════
+            function openFilePicker() {
+                document.getElementById("file-input").click();
+            }
+
+            function handleFileInput(files) {
+                addFilesToList(Array.from(files));
+            }
+
+            function handleDrop(event) {
+                event.preventDefault();
+                document.getElementById("center").classList.remove("drag-over");
+                var files = Array.from(event.dataTransfer.files).filter(
+                    function (f) {
+                        return /\.(gcode|nc|ngc)$/i.test(f.name);
+                    },
+                );
+                if (files.length > 0) {
+                    addFilesToList(files);
+                    appState.selectedFileIndex = appState.fileItems.findIndex(
+                        function (fi) {
+                            return fi.name === files[0].name;
+                        },
+                    );
+                    renderFileList();
+                    updateButtons();
+                    loadSelectedFile();
                 }
             }
-        </script>
 
-        <script type="module" src="app.js"></script>
+            function addFilesToList(files) {
+                var existing = new Set(
+                    appState.fileItems.map(function (f) {
+                        return f.name;
+                    }),
+                );
+                files.forEach(function (f) {
+                    if (
+                        /\.(gcode|nc|ngc)$/i.test(f.name) &&
+                        !existing.has(f.name)
+                    ) {
+                        appState.fileItems.push({
+                            file: f,
+                            name: f.name,
+                            size: f.size,
+                            date: f.lastModified,
+                        });
+                        existing.add(f.name);
+                    }
+                });
+                renderFileList();
+                updateButtons();
+                document.getElementById("dir-label").textContent =
+                    appState.fileItems.length + " file(s)";
+                log("Found " + appState.fileItems.length + " GCode file(s)");
+            }
+
+            function setSort(order) {
+                appState.sortOrder = order;
+                document.querySelectorAll(".sort-tab").forEach(function (t) {
+                    t.classList.toggle("active", t.dataset.sort === order);
+                });
+                renderFileList();
+            }
+
+            function getSortedFiles() {
+                var arr = appState.fileItems.slice();
+                if (appState.sortOrder === "name")
+                    arr.sort(function (a, b) {
+                        return a.name.localeCompare(b.name);
+                    });
+                else if (appState.sortOrder === "size")
+                    arr.sort(function (a, b) {
+                        return b.size - a.size;
+                    });
+                else
+                    arr.sort(function (a, b) {
+                        return b.date - a.date;
+                    });
+                return arr;
+            }
+
+            function renderFileList() {
+                var sorted = getSortedFiles();
+                var list = document.getElementById("file-list");
+                list.innerHTML = "";
+                var selItem =
+                    appState.selectedFileIndex >= 0
+                        ? appState.fileItems[appState.selectedFileIndex]
+                        : null;
+                sorted.forEach(function (item) {
+                    var isSel = selItem && item.name === selItem.name;
+                    var div = document.createElement("div");
+                    div.className = "file-item" + (isSel ? " selected" : "");
+                    div.onclick = function () {
+                        appState.selectedFileIndex =
+                            appState.fileItems.indexOf(item);
+                        renderFileList();
+                        updateButtons();
+                    };
+                    var size = formatBytes(item.size);
+                    var date = new Date(item.date).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                    });
+                    div.innerHTML =
+                        '<span class="file-name" title="' +
+                        item.name +
+                        '">' +
+                        item.name +
+                        '</span><span class="file-size">' +
+                        size +
+                        '</span><span class="file-date">' +
+                        date +
+                        "</span>";
+                    list.appendChild(div);
+                });
+            }
+
+            function formatBytes(b) {
+                if (b < 1024) return b + "B";
+                if (b < 1048576) return (b / 1024).toFixed(1) + "KB";
+                return (b / 1048576).toFixed(1) + "MB";
+            }
+
+            function updateButtons() {
+                var hasFile = appState.selectedFileIndex >= 0;
+                var hasModel = appState.loadedModels.length > 0;
+                document.getElementById("btn-load").disabled =
+                    !hasFile || appState.isLoading;
+                document.getElementById("btn-add").disabled =
+                    !hasFile || appState.isLoading;
+                document.getElementById("btn-analytics").disabled = !hasModel;
+                document.getElementById("btn-video").disabled = !hasModel;
+                document.getElementById("btn-photos").disabled = !hasModel;
+            }
+
+            // ════════════════════════════════════════
+            //  GCODE PARSER
+            // ════════════════════════════════════════
+            function parseGCode(text, onProgress) {
+                var lines = text.split(/\r?\n/);
+                var total = lines.length;
+                var points = [];
+                var x = 0,
+                    y = 0,
+                    z = 0,
+                    e = 0,
+                    f = 0;
+                var layer = 0,
+                    lastZ = -999999;
+
+                for (var i = 0; i < total; i++) {
+                    var line = lines[i];
+                    // strip comment
+                    var ci = line.indexOf(";");
+                    if (ci === 0) continue;
+                    var cmd = ci >= 0 ? line.slice(0, ci) : line;
+                    cmd = cmd.trim();
+                    if (!cmd) continue;
+
+                    var up = cmd.toUpperCase();
+                    var isG0 =
+                        up.charAt(0) === "G" &&
+                        up.charAt(1) === "0" &&
+                        (up.charAt(2) === " " ||
+                            up.charAt(2) === "\t" ||
+                            up.length === 2);
+                    var isG1 =
+                        up.charAt(0) === "G" &&
+                        up.charAt(1) === "1" &&
+                        (up.charAt(2) === " " ||
+                            up.charAt(2) === "\t" ||
+                            up.length === 2);
+                    if (!isG0 && !isG1) continue;
+
+                    var nx = null,
+                        ny = null,
+                        nz = null,
+                        ne = null,
+                        nf = null;
+                    var re = /([XYZEFxyzef])(-?\d*\.?\d+)/g;
+                    var m;
+                    while ((m = re.exec(cmd)) !== null) {
+                        var v = parseFloat(m[2]);
+                        switch (m[1].toUpperCase()) {
+                            case "X":
+                                nx = v;
+                                break;
+                            case "Y":
+                                ny = v;
+                                break;
+                            case "Z":
+                                nz = v;
+                                break;
+                            case "E":
+                                ne = v;
+                                break;
+                            case "F":
+                                nf = v;
+                                break;
+                        }
+                    }
+
+                    if (nx !== null) x = nx;
+                    if (ny !== null) y = ny;
+                    if (nz !== null) {
+                        z = nz;
+                        if (Math.abs(z - lastZ) > 1.0) {
+                            layer++;
+                            lastZ = z;
+                        }
+                    }
+                    if (ne !== null) e = ne;
+                    if (nf !== null) f = nf;
+
+                    var isExtrusion = isG1 && e > 0;
+                    points.push({
+                        x: x,
+                        y: y,
+                        z: z,
+                        e: e,
+                        f: f,
+                        layer: layer,
+                        isExtrusion: isExtrusion,
+                    });
+
+                    if (i % 10000 === 0 && onProgress) onProgress(i / total);
+                }
+                return points;
+            }
+
+            // ════════════════════════════════════════
+            //  GEOMETRY
+            // ════════════════════════════════════════
+            function removeCollinear(pts, angleDeg) {
+                if (pts.length <= 2 || angleDeg === 0) return pts;
+                var cosT = Math.cos((angleDeg * Math.PI) / 180);
+                var cosSq = cosT * cosT;
+                var keep = [pts[0]];
+                for (var i = 1; i < pts.length - 1; i++) {
+                    var p1 = keep[keep.length - 1],
+                        p2 = pts[i],
+                        p3 = pts[i + 1];
+                    var v1x = p2.x - p1.x,
+                        v1y = p2.y - p1.y,
+                        v1z = p2.z - p1.z;
+                    var v2x = p3.x - p2.x,
+                        v2y = p3.y - p2.y,
+                        v2z = p3.z - p2.z;
+                    var l1sq = v1x * v1x + v1y * v1y + v1z * v1z;
+                    var l2sq = v2x * v2x + v2y * v2y + v2z * v2z;
+                    if (l1sq < 1e-6 || l2sq < 1e-6) continue;
+                    var dot = v1x * v2x + v1y * v2y + v1z * v2z;
+                    if (dot < 0) {
+                        keep.push(p2);
+                        continue;
+                    }
+                    if (dot * dot < cosSq * l1sq * l2sq) keep.push(p2);
+                }
+                keep.push(pts[pts.length - 1]);
+                return keep;
+            }
+
+            function rotVec(vx, vy, vz, ux, uy, uz, ca, sa, t) {
+                var dot = ux * vx + uy * vy + uz * vz;
+                var cx = uy * vz - uz * vy,
+                    cy = uz * vx - ux * vz,
+                    cz = ux * vy - uy * vx;
+                return [
+                    ca * vx + sa * cx + t * dot * ux,
+                    ca * vy + sa * cy + t * dot * uy,
+                    ca * vz + sa * cz + t * dot * uz,
+                ];
+            }
+
+            function buildTube(path, radius, segs) {
+                var n = path.length;
+                if (n < 2) return null;
+                var angles = [];
+                for (var j = 0; j < segs; j++) {
+                    var a = (j / segs) * Math.PI * 2;
+                    angles.push({ c: Math.cos(a), s: Math.sin(a) });
+                }
+
+                // Parallel transport
+                var dx = path[1].x - path[0].x,
+                    dy = path[1].y - path[0].y,
+                    dz = path[1].z - path[0].z;
+                var tl = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                var Tx = dx / tl,
+                    Ty = dy / tl,
+                    Tz = dz / tl;
+                var Nx = 0,
+                    Ny = 1,
+                    Nz = 0;
+                if (Math.abs(Tx * Nx + Ty * Ny + Tz * Nz) > 0.99) {
+                    Nx = 1;
+                    Ny = 0;
+                    Nz = 0;
+                }
+                var cx = Ty * Nz - Tz * Ny,
+                    cy = Tz * Nx - Tx * Nz,
+                    cz = Tx * Ny - Ty * Nx;
+                var cl = Math.sqrt(cx * cx + cy * cy + cz * cz);
+                if (cl > 0) {
+                    Nx = cx / cl;
+                    Ny = cy / cl;
+                    Nz = cz / cl;
+                }
+                var Bx = Ty * Nz - Tz * Ny,
+                    By = Tz * Nx - Tx * Nz,
+                    Bz = Tx * Ny - Ty * Nx;
+
+                var positions = new Float32Array(n * segs * 3);
+                var normals = new Float32Array(n * segs * 3);
+
+                for (var i = 0; i < n; i++) {
+                    if (i > 0) {
+                        var dTx = path[i].x - path[i - 1].x,
+                            dTy = path[i].y - path[i - 1].y,
+                            dTz = path[i].z - path[i - 1].z;
+                        var dl = Math.sqrt(dTx * dTx + dTy * dTy + dTz * dTz);
+                        if (dl > 1e-6) {
+                            dTx /= dl;
+                            dTy /= dl;
+                            dTz /= dl;
+                            var ax = Ty * dTz - Tz * dTy,
+                                ay = Tz * dTx - Tx * dTz,
+                                az = Tx * dTy - Ty * dTx;
+                            var axLen = Math.sqrt(ax * ax + ay * ay + az * az);
+                            if (axLen > 1e-4) {
+                                var dotT = Math.min(
+                                    Math.max(
+                                        Tx * dTx + Ty * dTy + Tz * dTz,
+                                        -1,
+                                    ),
+                                    1,
+                                );
+                                var angle = Math.acos(dotT);
+                                var ux = ax / axLen,
+                                    uy = ay / axLen,
+                                    uz = az / axLen;
+                                var ca2 = Math.cos(angle),
+                                    sa2 = Math.sin(angle),
+                                    t2 = 1 - ca2;
+                                var rN = rotVec(
+                                    Nx,
+                                    Ny,
+                                    Nz,
+                                    ux,
+                                    uy,
+                                    uz,
+                                    ca2,
+                                    sa2,
+                                    t2,
+                                );
+                                Nx = rN[0];
+                                Ny = rN[1];
+                                Nz = rN[2];
+                                var rB = rotVec(
+                                    Bx,
+                                    By,
+                                    Bz,
+                                    ux,
+                                    uy,
+                                    uz,
+                                    ca2,
+                                    sa2,
+                                    t2,
+                                );
+                                Bx = rB[0];
+                                By = rB[1];
+                                Bz = rB[2];
+                            }
+                            Tx = dTx;
+                            Ty = dTy;
+                            Tz = dTz;
+                        }
+                    }
+                    var base = i * segs * 3;
+                    for (var j2 = 0; j2 < segs; j2++) {
+                        var ag = angles[j2];
+                        var nx2 = Nx * ag.c + Bx * ag.s,
+                            ny2 = Ny * ag.c + By * ag.s,
+                            nz2 = Nz * ag.c + Bz * ag.s;
+                        var nl2 = Math.sqrt(nx2 * nx2 + ny2 * ny2 + nz2 * nz2);
+                        if (nl2 > 0) {
+                            nx2 /= nl2;
+                            ny2 /= nl2;
+                            nz2 /= nl2;
+                        }
+                        var idx3 = base + j2 * 3;
+                        positions[idx3] = path[i].x + nx2 * radius;
+                        positions[idx3 + 1] = path[i].y + ny2 * radius;
+                        positions[idx3 + 2] = path[i].z + nz2 * radius;
+                        normals[idx3] = nx2;
+                        normals[idx3 + 1] = ny2;
+                        normals[idx3 + 2] = nz2;
+                    }
+                }
+
+                var indArr = new Uint32Array((n - 1) * segs * 6);
+                var idx = 0;
+                for (var ii = 0; ii < n - 1; ii++) {
+                    var i1 = ii * segs,
+                        i2 = (ii + 1) * segs;
+                    for (var jj = 0; jj < segs; jj++) {
+                        var c1 = i1 + jj,
+                            n1 = i1 + ((jj + 1) % segs),
+                            c2 = i2 + jj,
+                            n2 = i2 + ((jj + 1) % segs);
+                        indArr[idx++] = c1;
+                        indArr[idx++] = n1;
+                        indArr[idx++] = c2;
+                        indArr[idx++] = n1;
+                        indArr[idx++] = n2;
+                        indArr[idx++] = c2;
+                    }
+                }
+
+                var geo = new THREE.BufferGeometry();
+                geo.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(positions, 3),
+                );
+                geo.setAttribute(
+                    "normal",
+                    new THREE.BufferAttribute(normals, 3),
+                );
+                geo.setIndex(new THREE.BufferAttribute(indArr, 1));
+                return geo;
+            }
+
+            function processGeometry(points, tubeDiameter, collinearAngle) {
+                var radius = tubeDiameter / 2;
+                var layers = {};
+                var gMin = { x: 1e9, y: 1e9, z: 1e9 };
+                var gMax = { x: -1e9, y: -1e9, z: -1e9 };
+                var origCount = 0,
+                    optCount = 0;
+
+                for (var i = 0; i < points.length; i++) {
+                    var p = points[i];
+                    if (!p.isExtrusion) continue;
+                    // Coordinate mapping identical to Swift: (x, z, -y)
+                    var pos = { x: p.x, y: p.z, z: -p.y };
+                    if (!layers[p.layer]) layers[p.layer] = [];
+                    layers[p.layer].push(pos);
+                    if (pos.x < gMin.x) gMin.x = pos.x;
+                    if (pos.x > gMax.x) gMax.x = pos.x;
+                    if (pos.y < gMin.y) gMin.y = pos.y;
+                    if (pos.y > gMax.y) gMax.y = pos.y;
+                    if (pos.z < gMin.z) gMin.z = pos.z;
+                    if (pos.z > gMax.z) gMax.z = pos.z;
+                }
+
+                var layerKeys = Object.keys(layers)
+                    .map(Number)
+                    .sort(function (a, b) {
+                        return a - b;
+                    });
+                var meshes = [];
+
+                for (var li = 0; li < layerKeys.length; li++) {
+                    var layerID = layerKeys[li];
+                    var pts = layers[layerID];
+                    origCount += pts.length;
+                    if (collinearAngle > 0)
+                        pts = removeCollinear(pts, collinearAngle);
+                    optCount += pts.length;
+                    if (pts.length < 2) continue;
+                    var geo = buildTube(pts, radius, 8);
+                    if (geo) meshes.push({ id: layerID, geo: geo });
+                }
+
+                return {
+                    meshes: meshes,
+                    gMin: gMin,
+                    gMax: gMax,
+                    originalCount: origCount,
+                    optimizedCount: optCount,
+                };
+            }
+
+            // ════════════════════════════════════════
+            //  MATERIAL
+            // ════════════════════════════════════════
+            function makeMaterial(preset, colorHex) {
+                var color = new THREE.Color(colorHex);
+                switch (preset) {
+                    case "matte":
+                        return new THREE.MeshLambertMaterial({
+                            color: color,
+                            side: THREE.FrontSide,
+                        });
+                    case "plastic":
+                        return new THREE.MeshPhongMaterial({
+                            color: color,
+                            shininess: 40,
+                            specular: new THREE.Color(0x444444),
+                            side: THREE.FrontSide,
+                        });
+                    case "steel":
+                        return new THREE.MeshStandardMaterial({
+                            color: color,
+                            metalness: 1.0,
+                            roughness: 0.35,
+                            side: THREE.FrontSide,
+                        });
+                    case "glass":
+                        return new THREE.MeshPhongMaterial({
+                            color: new THREE.Color(0x99bbdd),
+                            transparent: true,
+                            opacity: 0.35,
+                            shininess: 100,
+                            specular: new THREE.Color(0xffffff),
+                            side: THREE.FrontSide,
+                        });
+                    default:
+                        return new THREE.MeshLambertMaterial({
+                            color: color,
+                            side: THREE.FrontSide,
+                        });
+                }
+            }
+
+            // ════════════════════════════════════════
+            //  SCENE REBUILD
+            // ════════════════════════════════════════
+            function rebuildScene() {
+                while (gcodeContainer.children.length > 0) {
+                    var child = gcodeContainer.children[0];
+                    child.traverse(function (o) {
+                        if (o.geometry) o.geometry.dispose();
+                        if (o.material) o.material.dispose();
+                    });
+                    gcodeContainer.remove(child);
+                }
+
+                if (appState.loadedModels.length === 0) {
+                    document
+                        .getElementById("empty-state")
+                        .classList.remove("hidden");
+                    document.getElementById("model-info").textContent =
+                        "No model loaded";
+                    updateGridAxis(100);
+                    return;
+                }
+                document.getElementById("empty-state").classList.add("hidden");
+
+                var allMin = { x: 1e9, y: 1e9, z: 1e9 };
+                var allMax = { x: -1e9, y: -1e9, z: -1e9 };
+                var mat = makeMaterial(appState.material, appState.modelColor);
+
+                appState.loadedModels.forEach(function (model) {
+                    if (!model.isVisible) return;
+                    var grp = new THREE.Group();
+                    grp.name = "model_" + model.id;
+                    grp.position.set(
+                        model.position.x,
+                        model.position.y,
+                        model.position.z,
+                    );
+                    model.meshes.forEach(function (m) {
+                        var mesh = new THREE.Mesh(m.geo, mat);
+                        mesh.name = "layer_" + m.id;
+                        grp.add(mesh);
+                    });
+                    gcodeContainer.add(grp);
+                    if (model.gMin && model.gMax) {
+                        var px = model.position.x,
+                            py = model.position.y,
+                            pz = model.position.z;
+                        if (model.gMin.x + px < allMin.x)
+                            allMin.x = model.gMin.x + px;
+                        if (model.gMin.y + py < allMin.y)
+                            allMin.y = model.gMin.y + py;
+                        if (model.gMin.z + pz < allMin.z)
+                            allMin.z = model.gMin.z + pz;
+                        if (model.gMax.x + px > allMax.x)
+                            allMax.x = model.gMax.x + px;
+                        if (model.gMax.y + py > allMax.y)
+                            allMax.y = model.gMax.y + py;
+                        if (model.gMax.z + pz > allMax.z)
+                            allMax.z = model.gMax.z + pz;
+                    }
+                });
+
+                if (allMin.x < 1e9) {
+                    var sX = allMax.x - allMin.x,
+                        sY = allMax.y - allMin.y,
+                        sZ = allMax.z - allMin.z;
+                    maxDimension = Math.max(
+                        Math.sqrt(sX * sX + sY * sY + sZ * sZ) / 2,
+                        1,
+                    );
+                    modelCenterY = (allMin.y + allMax.y) / 2;
+                }
+
+                updateGridAxis(maxDimension);
+                setCameraView("iso1");
+                updateModelInfo();
+            }
+
+            function updateModelInfo() {
+                if (appState.loadedModels.length === 0) {
+                    document.getElementById("model-info").textContent =
+                        "No model loaded";
+                    return;
+                }
+                var names = appState.loadedModels
+                    .filter(function (m) {
+                        return m.isVisible;
+                    })
+                    .map(function (m) {
+                        return m.name;
+                    });
+                document.getElementById("model-info").textContent = names
+                    .join(", ")
+                    .slice(0, 60);
+            }
+
+            // ════════════════════════════════════════
+            //  GRID / AXIS
+            // ════════════════════════════════════════
+            function updateGridAxis(dim) {
+                if (gridGroup) scene.remove(gridGroup);
+                gridGroup = new THREE.Group();
+                gridGroup.name = "grid";
+                gridGroup.visible = appState.showAxis;
+
+                var steps = [10, 50, 100, 500, 1000, 5000];
+                var idealStep = (dim * 2) / 10;
+                var step = steps[steps.length - 1];
+                for (var si = 0; si < steps.length; si++) {
+                    if (idealStep <= steps[si]) {
+                        step = steps[si];
+                        break;
+                    }
+                }
+                var extent = dim * 2,
+                    half = extent / 2;
+
+                var gridPts = [];
+                for (var gz = -half; gz <= half + 0.001; gz += step) {
+                    gridPts.push(-half, 0, gz, half, 0, gz);
+                }
+                for (var gx = -half; gx <= half + 0.001; gx += step) {
+                    gridPts.push(gx, 0, -half, gx, 0, half);
+                }
+                var gridGeo = new THREE.BufferGeometry();
+                gridGeo.setAttribute(
+                    "position",
+                    new THREE.BufferAttribute(new Float32Array(gridPts), 3),
+                );
+                gridGroup.add(
+                    new THREE.LineSegments(
+                        gridGeo,
+                        new THREE.LineBasicMaterial({ color: 0x222230 }),
+                    ),
+                );
+
+                var axisLen = dim * 1.2,
+                    axisR = dim * 0.004;
+                function addAxis(axis, color) {
+                    var g = new THREE.CylinderGeometry(
+                        axisR,
+                        axisR,
+                        axisLen,
+                        8,
+                    );
+                    var m2 = new THREE.Mesh(
+                        g,
+                        new THREE.MeshBasicMaterial({ color: color }),
+                    );
+                    if (axis === "x") {
+                        m2.rotation.z = Math.PI / 2;
+                        m2.position.set(axisLen / 2, 0, 0);
+                    } else if (axis === "y") {
+                        m2.position.set(0, axisLen / 2, 0);
+                    } else {
+                        m2.rotation.x = Math.PI / 2;
+                        m2.position.set(0, 0, axisLen / 2);
+                    }
+                    gridGroup.add(m2);
+                }
+                addAxis("x", 0xff2233);
+                addAxis("y", 0x33ff55);
+                addAxis("z", 0x3366ff);
+                scene.add(gridGroup);
+            }
+
+            function toggleAxis() {
+                appState.showAxis = !appState.showAxis;
+                if (gridGroup) gridGroup.visible = appState.showAxis;
+                document
+                    .getElementById("axis-toggle")
+                    .classList.toggle("active", appState.showAxis);
+            }
+
+            // ════════════════════════════════════════
+            //  CAMERA VIEWS
+            // ════════════════════════════════════════
+            function setCameraView(view) {
+                if (rotAnim) {
+                    cancelAnimationFrame(rotAnim);
+                    rotAnim = null;
+                    gcodeContainer.rotation.y = 0;
+                }
+                var fovRad = (camera.fov * Math.PI) / 180;
+                var dist = (maxDimension * 1.5) / Math.tan(fovRad / 2);
+                var h = modelCenterY;
+                var pos;
+                switch (view) {
+                    case "front":
+                        pos = [0, h, dist];
+                        break;
+                    case "back":
+                        pos = [0, h, -dist];
+                        break;
+                    case "left":
+                        pos = [-dist, h, 0];
+                        break;
+                    case "right":
+                        pos = [dist, h, 0];
+                        break;
+                    case "top":
+                        pos = [0, h + dist, 0.001];
+                        break;
+                    case "bottom":
+                        pos = [0, h - dist, 0.001];
+                        break;
+                    case "iso1":
+                        pos = [dist * 0.6, h + dist * 0.6, dist * 0.6];
+                        break;
+                    case "iso2":
+                        pos = [-dist * 0.6, h + dist * 0.6, dist * 0.6];
+                        break;
+                    case "iso3":
+                        pos = [dist * 0.6, h + dist * 0.6, -dist * 0.6];
+                        break;
+                    case "iso4":
+                        pos = [-dist * 0.6, h + dist * 0.6, -dist * 0.6];
+                        break;
+                    default:
+                        return;
+                }
+                camera.position.set(pos[0], pos[1], pos[2]);
+                controls.target.set(0, h, 0);
+                controls.update();
+            }
+
+            function rotate360() {
+                if (rotAnim) {
+                    cancelAnimationFrame(rotAnim);
+                    rotAnim = null;
+                    gcodeContainer.rotation.y = 0;
+                    return;
+                }
+                var start = performance.now(),
+                    dur = 3000;
+                function step(now) {
+                    var t = (now - start) / dur;
+                    gcodeContainer.rotation.y = t * Math.PI * 2;
+                    if (t < 1) rotAnim = requestAnimationFrame(step);
+                    else {
+                        gcodeContainer.rotation.y = 0;
+                        rotAnim = null;
+                    }
+                }
+                rotAnim = requestAnimationFrame(step);
+            }
+
+            // ════════════════════════════════════════
+            //  LOAD / ADD MODEL
+            // ════════════════════════════════════════
+            function sleep(ms) {
+                return new Promise(function (r) {
+                    setTimeout(r, ms);
+                });
+            }
+            function readFile(file) {
+                return new Promise(function (resolve, reject) {
+                    var reader = new FileReader();
+                    reader.onload = function (e) {
+                        resolve(e.target.result);
+                    };
+                    reader.onerror = reject;
+                    reader.readAsText(file);
+                });
+            }
+
+            function setLoading(show, title, sub) {
+                var el = document.getElementById("loading-overlay");
+                el.classList.toggle("show", !!show);
+                if (title)
+                    document.getElementById("load-title").textContent = title;
+                if (sub) document.getElementById("load-sub").textContent = sub;
+            }
+
+            function setProgress(t) {
+                var pct = Math.min(100, Math.round(t * 100));
+                document.getElementById("load-fill").style.width = pct + "%";
+                document.getElementById("progress-fill").style.width =
+                    pct + "%";
+                document.getElementById("progress-wrap").style.display =
+                    appState.isLoading ? "block" : "none";
+            }
+
+            async function loadSelectedFile() {
+                if (appState.selectedFileIndex < 0 || appState.isLoading)
+                    return;
+                var item = appState.fileItems[appState.selectedFileIndex];
+                if (!item) return;
+
+                appState.isLoading = true;
+                updateButtons();
+                setLoading(true, "Reading File", item.name);
+                setProgress(0.1);
+
+                try {
+                    var t0 = performance.now();
+                    var text = await readFile(item.file);
+                    log(
+                        "Loaded: " +
+                            item.name +
+                            " (" +
+                            formatBytes(item.file.size) +
+                            ")",
+                    );
+                    setLoading(true, "Parsing GCode", "Processing commands...");
+                    setProgress(0.35);
+                    await sleep(20);
+
+                    var points = parseGCode(text, function (p) {
+                        setProgress(0.35 + p * 0.25);
+                    });
+                    log(
+                        "Parsed " +
+                            points.length +
+                            " points in " +
+                            (performance.now() - t0).toFixed(0) +
+                            " ms",
+                    );
+                    setLoading(
+                        true,
+                        "Building 3D Mesh",
+                        "Generating geometry...",
+                    );
+                    setProgress(0.65);
+                    await sleep(20);
+
+                    var result = processGeometry(
+                        points,
+                        appState.tubeDiameter,
+                        appState.collinearAngle,
+                    );
+                    setProgress(1.0);
+
+                    // Dispose old
+                    appState.loadedModels.forEach(function (m) {
+                        m.meshes.forEach(function (x) {
+                            x.geo.dispose();
+                        });
+                    });
+                    var model = {
+                        id: Math.random().toString(36).slice(2),
+                        name: item.name,
+                        file: item.file,
+                        points: points,
+                        meshes: result.meshes,
+                        gMin: result.gMin,
+                        gMax: result.gMax,
+                        position: { x: 0, y: 0, z: 0 },
+                        isVisible: true,
+                        originalCount: result.originalCount,
+                        optimizedCount: result.optimizedCount,
+                    };
+                    appState.loadedModels = [model];
+                    appState.selectedModelID = model.id;
+                    rebuildScene();
+                    renderModelsPanel();
+                    calculateAnalytics();
+                    updateButtons();
+                    log("Model loaded: " + item.name);
+                } catch (err) {
+                    log("Error: " + err.message);
+                } finally {
+                    appState.isLoading = false;
+                    setLoading(false);
+                    updateButtons();
+                    document.getElementById("progress-wrap").style.display =
+                        "none";
+                }
+            }
+
+            async function addModel() {
+                if (appState.selectedFileIndex < 0 || appState.isLoading)
+                    return;
+                var item = appState.fileItems[appState.selectedFileIndex];
+                if (!item) return;
+                if (
+                    appState.loadedModels.some(function (m) {
+                        return m.name === item.name;
+                    })
+                ) {
+                    log("Model already loaded: " + item.name);
+                    return;
+                }
+                appState.isLoading = true;
+                updateButtons();
+                setLoading(true, "Adding Model", item.name);
+                setProgress(0.1);
+
+                try {
+                    var text = await readFile(item.file);
+                    setProgress(0.4);
+                    await sleep(20);
+                    var points = parseGCode(text, function () {});
+                    setProgress(0.7);
+                    await sleep(20);
+                    var result = processGeometry(
+                        points,
+                        appState.tubeDiameter,
+                        appState.collinearAngle,
+                    );
+                    setProgress(1.0);
+
+                    var posX = 0;
+                    appState.loadedModels.forEach(function (m) {
+                        if (m.gMax)
+                            posX = Math.max(posX, m.gMax.x + m.position.x + 50);
+                    });
+
+                    var model = {
+                        id: Math.random().toString(36).slice(2),
+                        name: item.name,
+                        file: item.file,
+                        points: points,
+                        meshes: result.meshes,
+                        gMin: result.gMin,
+                        gMax: result.gMax,
+                        position: { x: posX, y: 0, z: 0 },
+                        isVisible: true,
+                        originalCount: result.originalCount,
+                        optimizedCount: result.optimizedCount,
+                    };
+                    appState.loadedModels.push(model);
+                    appState.selectedModelID = model.id;
+                    rebuildScene();
+                    renderModelsPanel();
+                    updateButtons();
+                    log("Added: " + item.name + " at X=" + posX.toFixed(0));
+                } catch (err) {
+                    log("Error: " + err.message);
+                } finally {
+                    appState.isLoading = false;
+                    setLoading(false);
+                    updateButtons();
+                    document.getElementById("progress-wrap").style.display =
+                        "none";
+                }
+            }
+
+            // ════════════════════════════════════════
+            //  MODELS PANEL
+            // ════════════════════════════════════════
+            function renderModelsPanel() {
+                var panel = document.getElementById("models-panel");
+                if (appState.loadedModels.length === 0) {
+                    panel.innerHTML =
+                        '<div style="color:var(--text3);font-size:10px;padding:8px 0;">No models loaded</div>';
+                    return;
+                }
+                var html = "";
+                appState.loadedModels.forEach(function (m) {
+                    var isSel = m.id === appState.selectedModelID;
+                    var isHid = !m.isVisible;
+                    html +=
+                        '<div class="model-item ' +
+                        (isSel ? "selected" : "") +
+                        " " +
+                        (isHid ? "model-hidden" : "") +
+                        '" onclick="selectModel(\'' +
+                        m.id +
+                        "')\">" +
+                        '<span class="model-name" title="' +
+                        m.name +
+                        '">' +
+                        m.name +
+                        "</span>" +
+                        '<button class="eye-btn" onclick="event.stopPropagation();toggleModelVis(\'' +
+                        m.id +
+                        "')\">" +
+                        (m.isVisible ? "👁" : "🚫") +
+                        "</button>" +
+                        "</div>";
+                });
+
+                var sel = appState.loadedModels.find(function (m) {
+                    return m.id === appState.selectedModelID;
+                });
+                if (sel) {
+                    var sX = sel.gMax
+                        ? (sel.gMax.x - sel.gMin.x).toFixed(1)
+                        : "?";
+                    var sY = sel.gMax
+                        ? (sel.gMax.z - sel.gMin.z).toFixed(1)
+                        : "?";
+                    var sZ = sel.gMax
+                        ? (sel.gMax.y - sel.gMin.y).toFixed(1)
+                        : "?";
+                    var red =
+                        sel.originalCount > 0
+                            ? (
+                                  (1 - sel.optimizedCount / sel.originalCount) *
+                                  100
+                              ).toFixed(1)
+                            : "0";
+                    html +=
+                        '<div class="divider"></div>' +
+                        '<div style="font-size:9px;color:var(--text3);margin-bottom:6px;">&#128207; ' +
+                        sX +
+                        " × " +
+                        sY +
+                        " × " +
+                        sZ +
+                        " mm &nbsp; &#128202; Reduction: " +
+                        red +
+                        "%</div>" +
+                        '<div style="font-size:10px;color:var(--text2);margin-bottom:4px;font-weight:600;">Position (mm):</div>' +
+                        '<div class="pos-grid">' +
+                        '<div class="pos-group"><label>X</label><input type="number" id="pos-x" value="' +
+                        sel.position.x +
+                        '" step="1"></div>' +
+                        '<div class="pos-group"><label>Y</label><input type="number" id="pos-y" value="' +
+                        sel.position.y +
+                        '" step="1"></div>' +
+                        '<div class="pos-group"><label>Z</label><input type="number" id="pos-z" value="' +
+                        sel.position.z +
+                        '" step="1"></div>' +
+                        "</div>" +
+                        '<div class="model-actions">' +
+                        '<button class="btn btn-secondary btn-sm" onclick="updateModelPos(\'' +
+                        sel.id +
+                        "')\">Update</button>" +
+                        '<button class="btn btn-secondary btn-sm" onclick="resetModelPos(\'' +
+                        sel.id +
+                        "')\">Reset</button>" +
+                        '<button class="btn btn-danger btn-sm" onclick="removeModel(\'' +
+                        sel.id +
+                        "')\">&#128465; Remove</button>" +
+                        "</div>";
+                }
+                panel.innerHTML = html;
+            }
+
+            function selectModel(id) {
+                appState.selectedModelID = id;
+                renderModelsPanel();
+            }
+
+            function toggleModelVis(id) {
+                var m = appState.loadedModels.find(function (x) {
+                    return x.id === id;
+                });
+                if (!m) return;
+                m.isVisible = !m.isVisible;
+                var grp = gcodeContainer.getObjectByName("model_" + id);
+                if (grp) grp.visible = m.isVisible;
+                log((m.isVisible ? "👁 Shown: " : "🚫 Hidden: ") + m.name);
+                renderModelsPanel();
+                updateModelInfo();
+            }
+
+            function removeModel(id) {
+                var idx = appState.loadedModels.findIndex(function (m) {
+                    return m.id === id;
+                });
+                if (idx < 0) return;
+                var m = appState.loadedModels[idx];
+                m.meshes.forEach(function (x) {
+                    x.geo.dispose();
+                });
+                appState.loadedModels.splice(idx, 1);
+                if (appState.selectedModelID === id)
+                    appState.selectedModelID =
+                        appState.loadedModels.length > 0
+                            ? appState.loadedModels[0].id
+                            : null;
+                rebuildScene();
+                renderModelsPanel();
+                updateButtons();
+                log("Removed: " + m.name);
+            }
+
+            function updateModelPos(id) {
+                var m = appState.loadedModels.find(function (x) {
+                    return x.id === id;
+                });
+                if (!m) return;
+                m.position.x =
+                    parseFloat(document.getElementById("pos-x").value) || 0;
+                m.position.y =
+                    parseFloat(document.getElementById("pos-y").value) || 0;
+                m.position.z =
+                    parseFloat(document.getElementById("pos-z").value) || 0;
+                var grp = gcodeContainer.getObjectByName("model_" + id);
+                if (grp)
+                    grp.position.set(m.position.x, m.position.y, m.position.z);
+                log(
+                    "Position: " +
+                        m.name +
+                        " → X=" +
+                        m.position.x +
+                        ", Y=" +
+                        m.position.y +
+                        ", Z=" +
+                        m.position.z,
+                );
+            }
+
+            function resetModelPos(id) {
+                var m = appState.loadedModels.find(function (x) {
+                    return x.id === id;
+                });
+                if (!m) return;
+                m.position = { x: 0, y: 0, z: 0 };
+                var grp = gcodeContainer.getObjectByName("model_" + id);
+                if (grp) grp.position.set(0, 0, 0);
+                renderModelsPanel();
+                log("Reset position: " + m.name);
+            }
+
+            // ════════════════════════════════════════
+            //  MATERIAL / COLOR / PARAMS
+            // ════════════════════════════════════════
+            function setMaterial(mat) {
+                appState.material = mat;
+                document.querySelectorAll(".mat-btn").forEach(function (b) {
+                    b.classList.toggle("active", b.dataset.mat === mat);
+                });
+                rebuildScene();
+                log("Material: " + mat);
+            }
+
+            function applyColor() {
+                appState.modelColor =
+                    document.getElementById("color-picker").value;
+                rebuildScene();
+                log("Color: " + appState.modelColor);
+            }
+
+            async function applyDiameter() {
+                var v = parseFloat(
+                    document.getElementById("tube-slider").value,
+                );
+                if (v === appState.tubeDiameter) return;
+                appState.tubeDiameter = v;
+                appState.isLoading = true;
+                setLoading(
+                    true,
+                    "Rebuilding Geometry",
+                    "New diameter: " + v + " mm",
+                );
+                await sleep(20);
+                for (var i = 0; i < appState.loadedModels.length; i++) {
+                    var m = appState.loadedModels[i];
+                    m.meshes.forEach(function (x) {
+                        x.geo.dispose();
+                    });
+                    var r = processGeometry(
+                        m.points,
+                        appState.tubeDiameter,
+                        appState.collinearAngle,
+                    );
+                    m.meshes = r.meshes;
+                    m.gMin = r.gMin;
+                    m.gMax = r.gMax;
+                    m.originalCount = r.originalCount;
+                    m.optimizedCount = r.optimizedCount;
+                }
+                rebuildScene();
+                renderModelsPanel();
+                appState.isLoading = false;
+                setLoading(false);
+                log("Diameter applied: " + v + " mm");
+            }
+
+            async function applyCollinear() {
+                var v = parseFloat(
+                    document.getElementById("collinear-slider").value,
+                );
+                appState.collinearAngle = v;
+                appState.isLoading = true;
+                setLoading(
+                    true,
+                    "Rebuilding Geometry",
+                    "Collinear: " + v + "°",
+                );
+                await sleep(20);
+                for (var i = 0; i < appState.loadedModels.length; i++) {
+                    var m = appState.loadedModels[i];
+                    m.meshes.forEach(function (x) {
+                        x.geo.dispose();
+                    });
+                    var r = processGeometry(
+                        m.points,
+                        appState.tubeDiameter,
+                        appState.collinearAngle,
+                    );
+                    m.meshes = r.meshes;
+                    m.gMin = r.gMin;
+                    m.gMax = r.gMax;
+                    m.originalCount = r.originalCount;
+                    m.optimizedCount = r.optimizedCount;
+                }
+                rebuildScene();
+                renderModelsPanel();
+                appState.isLoading = false;
+                setLoading(false);
+                log("Collinear angle: " + v + "°");
+            }
+
+            // ════════════════════════════════════════
+            //  ANALYTICS
+            // ════════════════════════════════════════
+            function calculateAnalytics() {
+                var model = appState.loadedModels[0];
+                if (!model) return;
+                log("Calculating analytics: " + model.name);
+                var t0 = performance.now();
+                var points = model.points;
+                var minX = 1e9,
+                    maxX = -1e9,
+                    minY = 1e9,
+                    maxY = -1e9,
+                    minZ = 1e9,
+                    maxZ = -1e9;
+                var extPath = 0,
+                    maxF = 0,
+                    printTime = 0,
+                    extCount = 0,
+                    totalE = 0,
+                    lastE = 0;
+                var layerSet = {};
+                for (var i = 0; i < points.length; i++) {
+                    var p = points[i];
+                    layerSet[p.layer] = true;
+                    if (p.isExtrusion) {
+                        extCount++;
+                        if (p.x < minX) minX = p.x;
+                        if (p.x > maxX) maxX = p.x;
+                        if (p.y < minY) minY = p.y;
+                        if (p.y > maxY) maxY = p.y;
+                        if (p.z < minZ) minZ = p.z;
+                        if (p.z > maxZ) maxZ = p.z;
+                        if (p.f > maxF) maxF = p.f;
+                        var dE = p.e - lastE;
+                        if (dE > 0) totalE += dE;
+                        lastE = p.e;
+                    }
+                    if (i > 0) {
+                        var prev = points[i - 1];
+                        var dx = p.x - prev.x,
+                            dy = p.y - prev.y,
+                            dz = p.z - prev.z;
+                        var dSq = dx * dx + dy * dy + dz * dz;
+                        if (dSq > 1e-6) {
+                            var dist = Math.sqrt(dSq);
+                            if (p.isExtrusion) extPath += dist;
+                            printTime += dist / (p.f > 0 ? p.f : 1000);
+                        }
+                    }
+                }
+                var numLayers = Object.keys(layerSet).length;
+                var red =
+                    model.originalCount > 0
+                        ? (
+                              (1 - model.optimizedCount / model.originalCount) *
+                              100
+                          ).toFixed(1)
+                        : "0";
+                appState.stats = {
+                    fileName: model.name,
+                    fileSize: model.file.size,
+                    width: maxX - minX,
+                    length: maxY - minY,
+                    height: maxZ - minZ,
+                    extrusionPoints: extCount,
+                    extrusionPathLength: extPath,
+                    maxSpeedMmPerMin: maxF,
+                    estimatedPrintTimeMin: printTime,
+                    numLayers: numLayers,
+                    totalExtrusion: totalE,
+                    originalExtrusionPoints: model.originalCount,
+                    optimizedExtrusionPoints: model.optimizedCount,
+                    optimizationReductionPercent: red,
+                };
+                log(
+                    "Analytics in " +
+                        (performance.now() - t0).toFixed(1) +
+                        " ms",
+                );
+                renderAnalytics();
+            }
+
+            function renderAnalytics() {
+                var s = appState.stats;
+                if (!s) return;
+                var f2 = function (n) {
+                    return typeof n === "number" ? n.toFixed(2) : n;
+                };
+                var fT = function (min) {
+                    return min > 60
+                        ? (min / 60).toFixed(1) + " h"
+                        : min.toFixed(1) + " min";
+                };
+                document.getElementById("tab-analytics").innerHTML =
+                    '<div class="stats-title">GCode Analysis</div>' +
+                    '<div class="stats-subtitle">' +
+                    s.fileName +
+                    " &nbsp;·&nbsp; " +
+                    formatBytes(s.fileSize) +
+                    "</div>" +
+                    '<div class="stat-group"><div class="stat-group-title">&#128207; Dimensions</div>' +
+                    '<div class="stat-row"><span class="stat-key">Width (X)</span><span class="stat-val accent">' +
+                    f2(s.width) +
+                    " mm</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Length (Y)</span><span class="stat-val accent">' +
+                    f2(s.length) +
+                    " mm</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Height (Z)</span><span class="stat-val accent">' +
+                    f2(s.height) +
+                    " mm</span></div>" +
+                    "</div>" +
+                    '<div class="stat-group"><div class="stat-group-title">&#128424; Print Info</div>' +
+                    '<div class="stat-row"><span class="stat-key">Extrusion pts</span><span class="stat-val">' +
+                    s.extrusionPoints.toLocaleString() +
+                    "</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Print path</span><span class="stat-val">' +
+                    f2(s.extrusionPathLength) +
+                    " mm</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Max speed</span><span class="stat-val">' +
+                    (s.maxSpeedMmPerMin / 60).toFixed(1) +
+                    " mm/s</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Est. time</span><span class="stat-val">' +
+                    fT(s.estimatedPrintTimeMin) +
+                    "</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Layers</span><span class="stat-val">' +
+                    s.numLayers +
+                    "</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Total extrusion</span><span class="stat-val">' +
+                    f2(s.totalExtrusion) +
+                    " mm</span></div>" +
+                    "</div>" +
+                    '<div class="stat-group"><div class="stat-group-title">&#9889; Optimization</div>' +
+                    '<div class="stat-row"><span class="stat-key">Original pts</span><span class="stat-val">' +
+                    s.originalExtrusionPoints.toLocaleString() +
+                    "</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Optimized pts</span><span class="stat-val">' +
+                    s.optimizedExtrusionPoints.toLocaleString() +
+                    "</span></div>" +
+                    '<div class="stat-row"><span class="stat-key">Reduction</span><span class="stat-val accent">' +
+                    s.optimizationReductionPercent +
+                    "%</span></div>" +
+                    "</div>";
+            }
+
+            // ════════════════════════════════════════
+            //  TABS
+            // ════════════════════════════════════════
+            function switchTab(name) {
+                var tabs = ["analytics", "log"];
+                document.querySelectorAll(".tab").forEach(function (t, i) {
+                    t.classList.toggle("active", tabs[i] === name);
+                });
+                document.querySelectorAll(".tab-content").forEach(function (c) {
+                    c.classList.toggle("active", c.id === "tab-" + name);
+                });
+            }
+
+            // ════════════════════════════════════════
+            //  EXPORT VIDEO (WebM)
+            // ════════════════════════════════════════
+            async function exportVideo() {
+                if (appState.loadedModels.length === 0) return;
+                if (!window.MediaRecorder) {
+                    log("MediaRecorder not supported in this browser");
+                    return;
+                }
+                var w =
+                    parseInt(document.getElementById("vid-w").value) || 1920;
+                var h =
+                    parseInt(document.getElementById("vid-h").value) || 1080;
+                log("Recording " + w + "x" + h + " video...");
+
+                var offCanvas = document.createElement("canvas");
+                offCanvas.width = w;
+                offCanvas.height = h;
+                var offRenderer = new THREE.WebGLRenderer({
+                    canvas: offCanvas,
+                    antialias: true,
+                });
+                offRenderer.setSize(w, h);
+                offRenderer.setPixelRatio(1);
+
+                var stream = offCanvas.captureStream(30);
+                var mimeType = "video/webm;codecs=vp9";
+                if (!MediaRecorder.isTypeSupported(mimeType))
+                    mimeType = "video/webm";
+                var rec = new MediaRecorder(stream, {
+                    mimeType: mimeType,
+                    videoBitsPerSecond: 8000000,
+                });
+                var chunks = [];
+                rec.ondataavailable = function (e) {
+                    chunks.push(e.data);
+                };
+
+                var fps = 30,
+                    dur = 3.0,
+                    total = Math.round(fps * dur);
+                rec.start();
+                for (var i = 0; i < total; i++) {
+                    gcodeContainer.rotation.y = (i / total) * Math.PI * 2;
+                    offRenderer.render(scene, camera);
+                    await sleep(1000 / fps);
+                }
+                gcodeContainer.rotation.y = 0;
+                rec.stop();
+                await new Promise(function (r) {
+                    rec.onstop = r;
+                });
+
+                var blob = new Blob(chunks, { type: "video/webm" });
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement("a");
+                a.href = url;
+                a.download = "gcode_360.webm";
+                a.click();
+                URL.revokeObjectURL(url);
+                offRenderer.dispose();
+                log(
+                    "Video saved (" +
+                        (blob.size / 1024 / 1024).toFixed(1) +
+                        " MB)",
+                );
+            }
+
+            // ════════════════════════════════════════
+            //  SAVE PHOTOS
+            // ════════════════════════════════════════
+            async function savePhotos() {
+                if (appState.loadedModels.length === 0) return;
+                log("Capturing 10 view photos...");
+                var views = [
+                    "top",
+                    "bottom",
+                    "front",
+                    "back",
+                    "left",
+                    "right",
+                    "iso1",
+                    "iso2",
+                    "iso3",
+                    "iso4",
+                ];
+                for (var vi = 0; vi < views.length; vi++) {
+                    setCameraView(views[vi]);
+                    await sleep(250);
+                    renderer.render(scene, camera);
+                    var url = canvas.toDataURL("image/png");
+                    var a = document.createElement("a");
+                    a.href = url;
+                    a.download = "gcode_" + views[vi] + ".png";
+                    a.click();
+                    await sleep(150);
+                }
+                log("Photos saved.");
+            }
+
+            // ════════════════════════════════════════
+            //  INIT
+            // ════════════════════════════════════════
+            updateGridAxis(100);
+            log("GCodeVA ready. Drop a .gcode file or click Open.");
+        </script>
     </body>
 </html>
