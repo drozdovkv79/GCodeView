@@ -56,6 +56,7 @@
                 border-radius: 2px;
             }
 
+            /* === LEFT PANEL === */
             #left {
                 width: var(--sidebar);
                 min-width: 220px;
@@ -65,12 +66,30 @@
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
+                transition:
+                    width 0.3s ease,
+                    min-width 0.3s ease,
+                    max-width 0.3s ease,
+                    opacity 0.2s ease;
             }
+            #left.collapsed {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                border-right: none;
+                opacity: 0;
+                pointer-events: none;
+            }
+
+            /* === CENTER === */
             #center {
                 flex: 1;
                 position: relative;
                 background: #000;
+                min-width: 200px;
             }
+
+            /* === RIGHT PANEL === */
             #right {
                 width: var(--right);
                 min-width: 220px;
@@ -80,8 +99,22 @@
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
+                transition:
+                    width 0.3s ease,
+                    min-width 0.3s ease,
+                    max-width 0.3s ease,
+                    opacity 0.2s ease;
+            }
+            #right.collapsed {
+                width: 0 !important;
+                min-width: 0 !important;
+                max-width: 0 !important;
+                border-left: none;
+                opacity: 0;
+                pointer-events: none;
             }
 
+            /* === PANEL HEADER === */
             .panel-header {
                 padding: 10px 14px;
                 border-bottom: 1px solid var(--border);
@@ -104,9 +137,70 @@
                 box-shadow: 0 0 6px var(--accent);
             }
 
+            /* === COLLAPSE / RESTORE BUTTONS === */
+            .panel-collapse-btn {
+                background: none;
+                border: 1px solid var(--border2);
+                color: var(--text3);
+                cursor: pointer;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 11px;
+                transition: all 0.15s;
+                margin-left: auto;
+                line-height: 1;
+                font-family: var(--mono);
+                flex-shrink: 0;
+            }
+            .panel-collapse-btn:hover {
+                color: var(--accent);
+                border-color: var(--accent);
+            }
+
+            .panel-restore {
+                position: absolute;
+                top: 50%;
+                transform: translateY(-50%);
+                z-index: 10;
+                background: rgba(10, 10, 11, 0.9);
+                border: 1px solid var(--border2);
+                color: var(--text2);
+                width: 22px;
+                height: 52px;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                cursor: pointer;
+                font-size: 14px;
+                backdrop-filter: blur(8px);
+                transition: all 0.15s;
+                padding: 0;
+                font-family: var(--mono);
+            }
+            .panel-restore:hover {
+                color: var(--accent);
+                border-color: var(--accent);
+                background: rgba(10, 10, 11, 0.95);
+            }
+            .panel-restore.show {
+                display: flex;
+            }
+            #restore-left {
+                left: 0;
+                border-radius: 0 4px 4px 0;
+                border-left: none;
+            }
+            #restore-right {
+                right: 0;
+                border-radius: 4px 0 0 4px;
+                border-right: none;
+            }
+
+            /* === SCROLLABLE AREA === */
             .scroll {
                 overflow-y: auto;
                 flex: 1;
+                min-height: 0;
                 padding: 10px;
                 display: flex;
                 flex-direction: column;
@@ -117,6 +211,7 @@
                 border: 1px solid var(--border);
                 border-radius: var(--radius);
                 overflow: hidden;
+                flex-shrink: 0;
             }
             .section-header {
                 padding: 7px 10px;
@@ -544,6 +639,7 @@
                 display: flex;
                 border-bottom: 1px solid var(--border);
                 flex-shrink: 0;
+                position: relative;
             }
             .tab {
                 flex: 1;
@@ -710,7 +806,6 @@
                 inset: 0;
                 border: 2px dashed var(--accent);
                 pointer-events: none;
-                border-radius: 0;
                 z-index: 50;
             }
         </style>
@@ -718,7 +813,16 @@
     <body>
         <!-- LEFT PANEL -->
         <div id="left">
-            <div class="panel-header"><span class="dot"></span>GCodeVA</div>
+            <div class="panel-header">
+                <span class="dot"></span><span>GCodeVA</span>
+                <button
+                    class="panel-collapse-btn"
+                    onclick="togglePanel('left')"
+                    title="Hide panel"
+                >
+                    ‹
+                </button>
+            </div>
             <div class="scroll">
                 <div class="section open" id="sec-dir">
                     <div
@@ -1110,6 +1214,24 @@
         >
             <canvas id="three-canvas"></canvas>
 
+            <!-- Кнопки восстановления панелей -->
+            <button
+                class="panel-restore"
+                id="restore-left"
+                onclick="restorePanel('left')"
+                title="Show left panel"
+            >
+                ›
+            </button>
+            <button
+                class="panel-restore"
+                id="restore-right"
+                onclick="restorePanel('right')"
+                title="Show right panel"
+            >
+                ‹
+            </button>
+
             <div id="empty-state">
                 <div class="e-icon">&#11041;</div>
                 <div class="e-text">No model loaded</div>
@@ -1147,6 +1269,13 @@
                     Analytics
                 </div>
                 <div class="tab" onclick="switchTab('log')">Log</div>
+                <button
+                    class="panel-collapse-btn"
+                    onclick="togglePanel('right')"
+                    title="Hide panel"
+                >
+                    ›
+                </button>
             </div>
             <div class="tab-content active" id="tab-analytics">
                 <div
@@ -1174,468 +1303,24 @@
             onchange="handleFileInput(this.files)"
         />
 
-        <script>
-            // ─── THREE.JS loaded from CDN ───
+        <!-- Three.js r184 через importmap -->
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "https://unpkg.com/three@0.184.0/build/three.module.js",
+                    "three/addons/": "https://unpkg.com/three@0.184.0/examples/jsm/"
+                }
+            }
         </script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
-        <script>
-            // OrbitControls inline (r128 compatible)
-            (function () {
-                THREE.OrbitControls = function (object, domElement) {
-                    this.object = object;
-                    this.domElement = domElement || document;
-                    this.enabled = true;
-                    this.target = new THREE.Vector3();
-                    this.minDistance = 0;
-                    this.maxDistance = Infinity;
-                    this.minPolarAngle = 0;
-                    this.maxPolarAngle = Math.PI;
-                    this.minAzimuthAngle = -Infinity;
-                    this.maxAzimuthAngle = Infinity;
-                    this.enableDamping = false;
-                    this.dampingFactor = 0.05;
-                    this.enableZoom = true;
-                    this.zoomSpeed = 1.0;
-                    this.enableRotate = true;
-                    this.rotateSpeed = 1.0;
-                    this.enablePan = true;
-                    this.panSpeed = 1.0;
-                    this.screenSpacePanning = true;
-                    this.keyPanSpeed = 7.0;
-                    this.autoRotate = false;
-                    this.autoRotateSpeed = 2.0;
+        <script type="module">
+            import * as THREE from "three";
+            import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-                    var scope = this;
-                    var STATE = {
-                        NONE: -1,
-                        ROTATE: 0,
-                        DOLLY: 1,
-                        PAN: 2,
-                        TOUCH_ROTATE: 3,
-                        TOUCH_PAN: 4,
-                        TOUCH_DOLLY_PAN: 5,
-                        TOUCH_DOLLY_ROTATE: 6,
-                    };
-                    var state = STATE.NONE;
-                    var EPS = 0.000001;
-                    var spherical = new THREE.Spherical();
-                    var sphericalDelta = new THREE.Spherical();
-                    var scale = 1;
-                    var panOffset = new THREE.Vector3();
-                    var zoomChanged = false;
-                    var rotateStart = new THREE.Vector2();
-                    var rotateEnd = new THREE.Vector2();
-                    var rotateDelta = new THREE.Vector2();
-                    var panStart = new THREE.Vector2();
-                    var panEnd = new THREE.Vector2();
-                    var panDelta = new THREE.Vector2();
-                    var dollyStart = new THREE.Vector2();
-                    var dollyEnd = new THREE.Vector2();
-                    var dollyDelta = new THREE.Vector2();
-
-                    function getAutoRotationAngle() {
-                        return (
-                            ((2 * Math.PI) / 60 / 60) * scope.autoRotateSpeed
-                        );
-                    }
-                    function getZoomScale() {
-                        return Math.pow(0.95, scope.zoomSpeed);
-                    }
-                    function rotateLeft(angle) {
-                        sphericalDelta.theta -= angle;
-                    }
-                    function rotateUp(angle) {
-                        sphericalDelta.phi -= angle;
-                    }
-
-                    var panLeftV = new THREE.Vector3();
-                    function panLeft(distance, objectMatrix) {
-                        panLeftV.setFromMatrixColumn(objectMatrix, 0);
-                        panLeftV.multiplyScalar(-distance);
-                        panOffset.add(panLeftV);
-                    }
-                    var panUpV = new THREE.Vector3();
-                    function panUp(distance, objectMatrix) {
-                        if (scope.screenSpacePanning) {
-                            panUpV.setFromMatrixColumn(objectMatrix, 1);
-                        } else {
-                            panUpV.setFromMatrixColumn(objectMatrix, 0);
-                            panUpV.crossVectors(scope.object.up, panUpV);
-                        }
-                        panUpV.multiplyScalar(distance);
-                        panOffset.add(panUpV);
-                    }
-                    var panOffset2 = new THREE.Vector3();
-                    var pan = function (deltaX, deltaY) {
-                        var el = scope.domElement;
-                        if (scope.object.isPerspectiveCamera) {
-                            var pos = scope.object.position;
-                            panOffset2.copy(pos).sub(scope.target);
-                            var targetDist = panOffset2.length();
-                            targetDist *= Math.tan(
-                                ((scope.object.fov / 2) * Math.PI) / 180.0,
-                            );
-                            panLeft(
-                                (2 * deltaX * targetDist) / el.clientHeight,
-                                scope.object.matrix,
-                            );
-                            panUp(
-                                (2 * deltaY * targetDist) / el.clientHeight,
-                                scope.object.matrix,
-                            );
-                        } else {
-                            panLeft(
-                                (deltaX *
-                                    (scope.object.right - scope.object.left)) /
-                                    scope.object.zoom /
-                                    el.clientWidth,
-                                scope.object.matrix,
-                            );
-                            panUp(
-                                (deltaY *
-                                    (scope.object.top - scope.object.bottom)) /
-                                    scope.object.zoom /
-                                    el.clientHeight,
-                                scope.object.matrix,
-                            );
-                        }
-                    };
-
-                    function dollyIn(dollyScale) {
-                        if (scope.object.isPerspectiveCamera)
-                            scale /= dollyScale;
-                        else {
-                            scope.object.zoom = Math.max(
-                                scope.minZoom || 0,
-                                Math.min(
-                                    scope.maxZoom || Infinity,
-                                    scope.object.zoom * dollyScale,
-                                ),
-                            );
-                            scope.object.updateProjectionMatrix();
-                            zoomChanged = true;
-                        }
-                    }
-                    function dollyOut(dollyScale) {
-                        if (scope.object.isPerspectiveCamera)
-                            scale *= dollyScale;
-                        else {
-                            scope.object.zoom = Math.max(
-                                scope.minZoom || 0,
-                                Math.min(
-                                    scope.maxZoom || Infinity,
-                                    scope.object.zoom / dollyScale,
-                                ),
-                            );
-                            scope.object.updateProjectionMatrix();
-                            zoomChanged = true;
-                        }
-                    }
-
-                    this.update = (function () {
-                        var offset = new THREE.Vector3();
-                        var quat = new THREE.Quaternion().setFromUnitVectors(
-                            object.up,
-                            new THREE.Vector3(0, 1, 0),
-                        );
-                        var quatInverse = quat.clone().invert();
-                        var lastPosition = new THREE.Vector3();
-                        var lastQuaternion = new THREE.Quaternion();
-                        return function update() {
-                            var position = scope.object.position;
-                            offset.copy(position).sub(scope.target);
-                            offset.applyQuaternion(quat);
-                            spherical.setFromVector3(offset);
-                            if (scope.autoRotate && state === STATE.NONE)
-                                rotateLeft(getAutoRotationAngle());
-                            if (scope.enableDamping) {
-                                spherical.theta +=
-                                    sphericalDelta.theta * scope.dampingFactor;
-                                spherical.phi +=
-                                    sphericalDelta.phi * scope.dampingFactor;
-                            } else {
-                                spherical.theta += sphericalDelta.theta;
-                                spherical.phi += sphericalDelta.phi;
-                            }
-                            spherical.theta = Math.max(
-                                scope.minAzimuthAngle,
-                                Math.min(
-                                    scope.maxAzimuthAngle,
-                                    spherical.theta,
-                                ),
-                            );
-                            spherical.phi = Math.max(
-                                scope.minPolarAngle,
-                                Math.min(scope.maxPolarAngle, spherical.phi),
-                            );
-                            spherical.makeSafe();
-                            spherical.radius *= scale;
-                            spherical.radius = Math.max(
-                                scope.minDistance,
-                                Math.min(scope.maxDistance, spherical.radius),
-                            );
-                            if (scope.enableDamping)
-                                scope.target.addScaledVector(
-                                    panOffset,
-                                    scope.dampingFactor,
-                                );
-                            else scope.target.add(panOffset);
-                            offset.setFromSpherical(spherical);
-                            offset.applyQuaternion(quatInverse);
-                            position.copy(scope.target).add(offset);
-                            scope.object.lookAt(scope.target);
-                            if (scope.enableDamping) {
-                                sphericalDelta.theta *= 1 - scope.dampingFactor;
-                                sphericalDelta.phi *= 1 - scope.dampingFactor;
-                                panOffset.multiplyScalar(
-                                    1 - scope.dampingFactor,
-                                );
-                            } else {
-                                sphericalDelta.set(0, 0, 0);
-                                panOffset.set(0, 0, 0);
-                            }
-                            scale = 1;
-                            if (
-                                zoomChanged ||
-                                lastPosition.distanceToSquared(
-                                    scope.object.position,
-                                ) > EPS ||
-                                8 *
-                                    (1 -
-                                        lastQuaternion.dot(
-                                            scope.object.quaternion,
-                                        )) >
-                                    EPS
-                            ) {
-                                lastPosition.copy(scope.object.position);
-                                lastQuaternion.copy(scope.object.quaternion);
-                                zoomChanged = false;
-                                return true;
-                            }
-                            return false;
-                        };
-                    })();
-
-                    this.dispose = function () {
-                        scope.domElement.removeEventListener(
-                            "contextmenu",
-                            onContextMenu,
-                        );
-                        scope.domElement.removeEventListener(
-                            "mousedown",
-                            onMouseDown,
-                        );
-                        scope.domElement.removeEventListener(
-                            "wheel",
-                            onMouseWheel,
-                        );
-                        scope.domElement.removeEventListener(
-                            "touchstart",
-                            onTouchStart,
-                        );
-                        scope.domElement.removeEventListener(
-                            "touchend",
-                            onTouchEnd,
-                        );
-                        scope.domElement.removeEventListener(
-                            "touchmove",
-                            onTouchMove,
-                        );
-                        document.removeEventListener("mousemove", onMouseMove);
-                        document.removeEventListener("mouseup", onMouseUp);
-                    };
-
-                    function onMouseDown(event) {
-                        if (!scope.enabled) return;
-                        event.preventDefault();
-                        if (event.button === 0) {
-                            if (!scope.enableRotate) return;
-                            rotateStart.set(event.clientX, event.clientY);
-                            state = STATE.ROTATE;
-                        } else if (event.button === 1) {
-                            if (!scope.enableZoom) return;
-                            dollyStart.set(event.clientX, event.clientY);
-                            state = STATE.DOLLY;
-                        } else if (event.button === 2) {
-                            if (!scope.enablePan) return;
-                            panStart.set(event.clientX, event.clientY);
-                            state = STATE.PAN;
-                        }
-                        if (state !== STATE.NONE) {
-                            document.addEventListener("mousemove", onMouseMove);
-                            document.addEventListener("mouseup", onMouseUp);
-                        }
-                    }
-
-                    function onMouseMove(event) {
-                        if (!scope.enabled) return;
-                        event.preventDefault();
-                        if (state === STATE.ROTATE) {
-                            if (!scope.enableRotate) return;
-                            rotateEnd.set(event.clientX, event.clientY);
-                            rotateDelta
-                                .subVectors(rotateEnd, rotateStart)
-                                .multiplyScalar(scope.rotateSpeed);
-                            var el = scope.domElement;
-                            rotateLeft(
-                                (2 * Math.PI * rotateDelta.x) / el.clientHeight,
-                            );
-                            rotateUp(
-                                (2 * Math.PI * rotateDelta.y) / el.clientHeight,
-                            );
-                            rotateStart.copy(rotateEnd);
-                        } else if (state === STATE.DOLLY) {
-                            if (!scope.enableZoom) return;
-                            dollyEnd.set(event.clientX, event.clientY);
-                            dollyDelta.subVectors(dollyEnd, dollyStart);
-                            if (dollyDelta.y > 0) dollyIn(getZoomScale());
-                            else if (dollyDelta.y < 0) dollyOut(getZoomScale());
-                            dollyStart.copy(dollyEnd);
-                        } else if (state === STATE.PAN) {
-                            if (!scope.enablePan) return;
-                            panEnd.set(event.clientX, event.clientY);
-                            panDelta
-                                .subVectors(panEnd, panStart)
-                                .multiplyScalar(scope.panSpeed);
-                            pan(panDelta.x, panDelta.y);
-                            panStart.copy(panEnd);
-                        }
-                    }
-
-                    function onMouseUp() {
-                        document.removeEventListener("mousemove", onMouseMove);
-                        document.removeEventListener("mouseup", onMouseUp);
-                        state = STATE.NONE;
-                    }
-                    function onMouseWheel(event) {
-                        if (
-                            !scope.enabled ||
-                            !scope.enableZoom ||
-                            (state !== STATE.NONE && state !== STATE.ROTATE)
-                        )
-                            return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        if (event.deltaY < 0) dollyOut(getZoomScale());
-                        else if (event.deltaY > 0) dollyIn(getZoomScale());
-                    }
-
-                    var touchesArr = [];
-                    function onTouchStart(event) {
-                        if (!scope.enabled) return;
-                        event.preventDefault();
-                        touchesArr = Array.from(event.touches);
-                        if (touchesArr.length === 1) {
-                            rotateStart.set(
-                                touchesArr[0].pageX,
-                                touchesArr[0].pageY,
-                            );
-                            state = STATE.TOUCH_ROTATE;
-                        } else if (touchesArr.length === 2) {
-                            var dx = touchesArr[0].pageX - touchesArr[1].pageX,
-                                dy = touchesArr[0].pageY - touchesArr[1].pageY;
-                            dollyStart.set(0, Math.sqrt(dx * dx + dy * dy));
-                            var x =
-                                    0.5 *
-                                    (touchesArr[0].pageX + touchesArr[1].pageX),
-                                y =
-                                    0.5 *
-                                    (touchesArr[0].pageY + touchesArr[1].pageY);
-                            panStart.set(x, y);
-                            state = STATE.TOUCH_DOLLY_PAN;
-                        }
-                    }
-                    function onTouchMove(event) {
-                        if (!scope.enabled) return;
-                        event.preventDefault();
-                        touchesArr = Array.from(event.touches);
-                        if (
-                            touchesArr.length === 1 &&
-                            state === STATE.TOUCH_ROTATE
-                        ) {
-                            rotateEnd.set(
-                                touchesArr[0].pageX,
-                                touchesArr[0].pageY,
-                            );
-                            rotateDelta
-                                .subVectors(rotateEnd, rotateStart)
-                                .multiplyScalar(scope.rotateSpeed);
-                            var el = scope.domElement;
-                            rotateLeft(
-                                (2 * Math.PI * rotateDelta.x) / el.clientHeight,
-                            );
-                            rotateUp(
-                                (2 * Math.PI * rotateDelta.y) / el.clientHeight,
-                            );
-                            rotateStart.copy(rotateEnd);
-                        } else if (
-                            touchesArr.length === 2 &&
-                            state === STATE.TOUCH_DOLLY_PAN
-                        ) {
-                            var dx = touchesArr[0].pageX - touchesArr[1].pageX,
-                                dy = touchesArr[0].pageY - touchesArr[1].pageY;
-                            dollyEnd.set(0, Math.sqrt(dx * dx + dy * dy));
-                            dollyDelta.set(
-                                0,
-                                Math.pow(
-                                    dollyEnd.y / dollyStart.y,
-                                    scope.zoomSpeed,
-                                ),
-                            );
-                            dollyIn(dollyDelta.y);
-                            dollyStart.copy(dollyEnd);
-                            var x =
-                                    0.5 *
-                                    (touchesArr[0].pageX + touchesArr[1].pageX),
-                                y =
-                                    0.5 *
-                                    (touchesArr[0].pageY + touchesArr[1].pageY);
-                            panEnd.set(x, y);
-                            panDelta
-                                .subVectors(panEnd, panStart)
-                                .multiplyScalar(scope.panSpeed);
-                            pan(panDelta.x, panDelta.y);
-                            panStart.copy(panEnd);
-                        }
-                    }
-                    function onTouchEnd() {
-                        state = STATE.NONE;
-                    }
-                    function onContextMenu(event) {
-                        if (!scope.enabled) return;
-                        event.preventDefault();
-                    }
-
-                    scope.domElement.addEventListener(
-                        "contextmenu",
-                        onContextMenu,
-                    );
-                    scope.domElement.addEventListener("mousedown", onMouseDown);
-                    scope.domElement.addEventListener("wheel", onMouseWheel, {
-                        passive: false,
-                    });
-                    scope.domElement.addEventListener(
-                        "touchstart",
-                        onTouchStart,
-                        { passive: false },
-                    );
-                    scope.domElement.addEventListener("touchend", onTouchEnd);
-                    scope.domElement.addEventListener(
-                        "touchmove",
-                        onTouchMove,
-                        { passive: false },
-                    );
-
-                    this.update();
-                };
-            })();
-        </script>
-        <script>
             // ════════════════════════════════════════
             //  STATE
             // ════════════════════════════════════════
-            var appState = {
+            const appState = {
                 fileItems: [],
                 sortOrder: "name",
                 selectedFileIndex: -1,
@@ -1651,56 +1336,67 @@
             };
 
             // ════════════════════════════════════════
-            //  THREE.JS SETUP
+            //  THREE.JS SETUP (r184)
             // ════════════════════════════════════════
-            var canvas = document.getElementById("three-canvas");
-            var renderer = new THREE.WebGLRenderer({
+            const canvas = document.getElementById("three-canvas");
+            const renderer = new THREE.WebGLRenderer({
                 canvas: canvas,
                 antialias: true,
                 logarithmicDepthBuffer: true,
             });
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.shadowMap.enabled = true;
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
 
-            var scene = new THREE.Scene();
+            const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x000000);
 
-            var camera = new THREE.PerspectiveCamera(45, 1, 0.5, 500000);
+            const camera = new THREE.PerspectiveCamera(45, 1, 0.5, 500000);
             camera.position.set(100, 100, 100);
 
-            var controls = new THREE.OrbitControls(camera, canvas);
+            const controls = new OrbitControls(camera, canvas);
             controls.enableDamping = true;
             controls.dampingFactor = 0.08;
             controls.screenSpacePanning = false;
 
-            // Lighting
-            var am1 = scene.add(new THREE.AmbientLight(0xffffff, 0.2));
-            var dl1 = new THREE.DirectionalLight(0xffffff, 0.9);
+            // Lighting — интенсивность адаптирована под r184 (physically correct)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+
+            const dl1 = new THREE.DirectionalLight(0xffffff, 2.5);
             dl1.position.set(300, 1500, 1000);
             scene.add(dl1);
-            //var dl2 = new THREE.DirectionalLight(0xffffff, 0.7);
-            //dl2.position.set(40, 3500, 0);
-            //scene.add(dl2);
 
-            var gcodeContainer = new THREE.Group();
+            const dl2 = new THREE.DirectionalLight(0xffffff, 0.8);
+            dl2.position.set(-500, 800, -600);
+            scene.add(dl2);
+
+            const gcodeContainer = new THREE.Group();
             gcodeContainer.name = "gcode_container";
             scene.add(gcodeContainer);
 
-            var gridGroup = null;
-            var maxDimension = 100;
-            var modelCenterY = 0;
-            var rotAnim = null;
+            let gridGroup = null;
+            let maxDimension = 100;
+            let modelCenterY = 0;
+            let rotAnim = null;
 
             function resizeRenderer() {
-                var c = document.getElementById("center");
-                var w = c.clientWidth,
+                const c = document.getElementById("center");
+                const w = c.clientWidth,
                     h = c.clientHeight;
+                if (w < 1 || h < 1) return;
                 renderer.setSize(w, h);
                 camera.aspect = w / h;
                 camera.updateProjectionMatrix();
             }
             resizeRenderer();
             window.addEventListener("resize", resizeRenderer);
+
+            // Наблюдатель за изменением размера center при сворачивании панелей
+            const resizeObserver = new ResizeObserver(() => resizeRenderer());
+            resizeObserver.observe(document.getElementById("center"));
 
             (function animLoop() {
                 requestAnimationFrame(animLoop);
@@ -1709,13 +1405,30 @@
             })();
 
             // ════════════════════════════════════════
+            //  PANEL TOGGLE
+            // ════════════════════════════════════════
+            function togglePanel(side) {
+                const panel = document.getElementById(side);
+                panel.classList.add("collapsed");
+                const restoreBtn = document.getElementById("restore-" + side);
+                restoreBtn.classList.add("show");
+            }
+
+            function restorePanel(side) {
+                const panel = document.getElementById(side);
+                panel.classList.remove("collapsed");
+                const restoreBtn = document.getElementById("restore-" + side);
+                restoreBtn.classList.remove("show");
+            }
+
+            // ════════════════════════════════════════
             //  LOGGING
             // ════════════════════════════════════════
             function log(msg) {
-                var now = new Date();
-                var time = now.toTimeString().slice(0, 8);
-                var container = document.getElementById("log-container");
-                var line = document.createElement("div");
+                const now = new Date();
+                const time = now.toTimeString().slice(0, 8);
+                const container = document.getElementById("log-container");
+                const line = document.createElement("div");
                 line.className = "log-line";
                 line.innerHTML =
                     '<span class="log-time">[' +
@@ -1731,9 +1444,9 @@
             //  SECTIONS
             // ════════════════════════════════════════
             function toggleSection(id) {
-                var el = document.getElementById(id);
+                const el = document.getElementById(id);
                 el.classList.toggle("open");
-                var ch = el.querySelector(".chevron");
+                const ch = el.querySelector(".chevron");
                 ch.innerHTML = el.classList.contains("open")
                     ? "&#9650;"
                     : "&#9660;";
@@ -1753,7 +1466,7 @@
             function handleDrop(event) {
                 event.preventDefault();
                 document.getElementById("center").classList.remove("drag-over");
-                var files = Array.from(event.dataTransfer.files).filter(
+                const files = Array.from(event.dataTransfer.files).filter(
                     function (f) {
                         return /\.(gcode|nc|ngc)$/i.test(f.name);
                     },
@@ -1772,7 +1485,7 @@
             }
 
             function addFilesToList(files) {
-                var existing = new Set(
+                const existing = new Set(
                     appState.fileItems.map(function (f) {
                         return f.name;
                     }),
@@ -1807,7 +1520,7 @@
             }
 
             function getSortedFiles() {
-                var arr = appState.fileItems.slice();
+                const arr = appState.fileItems.slice();
                 if (appState.sortOrder === "name")
                     arr.sort(function (a, b) {
                         return a.name.localeCompare(b.name);
@@ -1824,16 +1537,16 @@
             }
 
             function renderFileList() {
-                var sorted = getSortedFiles();
-                var list = document.getElementById("file-list");
+                const sorted = getSortedFiles();
+                const list = document.getElementById("file-list");
                 list.innerHTML = "";
-                var selItem =
+                const selItem =
                     appState.selectedFileIndex >= 0
                         ? appState.fileItems[appState.selectedFileIndex]
                         : null;
                 sorted.forEach(function (item) {
-                    var isSel = selItem && item.name === selItem.name;
-                    var div = document.createElement("div");
+                    const isSel = selItem && item.name === selItem.name;
+                    const div = document.createElement("div");
                     div.className = "file-item" + (isSel ? " selected" : "");
                     div.onclick = function () {
                         appState.selectedFileIndex =
@@ -1841,11 +1554,11 @@
                         renderFileList();
                         updateButtons();
                     };
-                    var size = formatBytes(item.size);
-                    var date = new Date(item.date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                    });
+                    const size = formatBytes(item.size);
+                    const date = new Date(item.date).toLocaleDateString(
+                        "en-US",
+                        { month: "short", day: "numeric" },
+                    );
                     div.innerHTML =
                         '<span class="file-name" title="' +
                         item.name +
@@ -1867,8 +1580,8 @@
             }
 
             function updateButtons() {
-                var hasFile = appState.selectedFileIndex >= 0;
-                var hasModel = appState.loadedModels.length > 0;
+                const hasFile = appState.selectedFileIndex >= 0;
+                const hasModel = appState.loadedModels.length > 0;
                 document.getElementById("btn-load").disabled =
                     !hasFile || appState.isLoading;
                 document.getElementById("btn-add").disabled =
@@ -1882,34 +1595,33 @@
             //  GCODE PARSER
             // ════════════════════════════════════════
             function parseGCode(text, onProgress) {
-                var lines = text.split(/\r?\n/);
-                var total = lines.length;
-                var points = [];
-                var x = 0,
+                const lines = text.split(/\r?\n/);
+                const total = lines.length;
+                const points = [];
+                let x = 0,
                     y = 0,
                     z = 0,
                     e = 0,
                     f = 0;
-                var layer = 0,
+                let layer = 0,
                     lastZ = -999999;
 
-                for (var i = 0; i < total; i++) {
-                    var line = lines[i];
-                    // strip comment
-                    var ci = line.indexOf(";");
+                for (let i = 0; i < total; i++) {
+                    let line = lines[i];
+                    const ci = line.indexOf(";");
                     if (ci === 0) continue;
-                    var cmd = ci >= 0 ? line.slice(0, ci) : line;
+                    let cmd = ci >= 0 ? line.slice(0, ci) : line;
                     cmd = cmd.trim();
                     if (!cmd) continue;
 
-                    var up = cmd.toUpperCase();
-                    var isG0 =
+                    const up = cmd.toUpperCase();
+                    const isG0 =
                         up.charAt(0) === "G" &&
                         up.charAt(1) === "0" &&
                         (up.charAt(2) === " " ||
                             up.charAt(2) === "\t" ||
                             up.length === 2);
-                    var isG1 =
+                    const isG1 =
                         up.charAt(0) === "G" &&
                         up.charAt(1) === "1" &&
                         (up.charAt(2) === " " ||
@@ -1917,15 +1629,15 @@
                             up.length === 2);
                     if (!isG0 && !isG1) continue;
 
-                    var nx = null,
+                    let nx = null,
                         ny = null,
                         nz = null,
                         ne = null,
                         nf = null;
-                    var re = /([XYZEFxyzef])(-?\d*\.?\d+)/g;
-                    var m;
+                    const re = /([XYZEFxyzef])(-?\d*\.?\d+)/g;
+                    let m;
                     while ((m = re.exec(cmd)) !== null) {
-                        var v = parseFloat(m[2]);
+                        const v = parseFloat(m[2]);
                         switch (m[1].toUpperCase()) {
                             case "X":
                                 nx = v;
@@ -1957,16 +1669,8 @@
                     if (ne !== null) e = ne;
                     if (nf !== null) f = nf;
 
-                    var isExtrusion = isG1 && e > 0;
-                    points.push({
-                        x: x,
-                        y: y,
-                        z: z,
-                        e: e,
-                        f: f,
-                        layer: layer,
-                        isExtrusion: isExtrusion,
-                    });
+                    const isExtrusion = isG1 && e > 0;
+                    points.push({ x, y, z, e, f, layer, isExtrusion });
 
                     if (i % 10000 === 0 && onProgress) onProgress(i / total);
                 }
@@ -1978,23 +1682,23 @@
             // ════════════════════════════════════════
             function removeCollinear(pts, angleDeg) {
                 if (pts.length <= 2 || angleDeg === 0) return pts;
-                var cosT = Math.cos((angleDeg * Math.PI) / 180);
-                var cosSq = cosT * cosT;
-                var keep = [pts[0]];
-                for (var i = 1; i < pts.length - 1; i++) {
-                    var p1 = keep[keep.length - 1],
+                const cosT = Math.cos((angleDeg * Math.PI) / 180);
+                const cosSq = cosT * cosT;
+                const keep = [pts[0]];
+                for (let i = 1; i < pts.length - 1; i++) {
+                    const p1 = keep[keep.length - 1],
                         p2 = pts[i],
                         p3 = pts[i + 1];
-                    var v1x = p2.x - p1.x,
+                    const v1x = p2.x - p1.x,
                         v1y = p2.y - p1.y,
                         v1z = p2.z - p1.z;
-                    var v2x = p3.x - p2.x,
+                    const v2x = p3.x - p2.x,
                         v2y = p3.y - p2.y,
                         v2z = p3.z - p2.z;
-                    var l1sq = v1x * v1x + v1y * v1y + v1z * v1z;
-                    var l2sq = v2x * v2x + v2y * v2y + v2z * v2z;
+                    const l1sq = v1x * v1x + v1y * v1y + v1z * v1z;
+                    const l2sq = v2x * v2x + v2y * v2y + v2z * v2z;
                     if (l1sq < 1e-6 || l2sq < 1e-6) continue;
-                    var dot = v1x * v2x + v1y * v2y + v1z * v2z;
+                    const dot = v1x * v2x + v1y * v2y + v1z * v2z;
                     if (dot < 0) {
                         keep.push(p2);
                         continue;
@@ -2006,8 +1710,8 @@
             }
 
             function rotVec(vx, vy, vz, ux, uy, uz, ca, sa, t) {
-                var dot = ux * vx + uy * vy + uz * vz;
-                var cx = uy * vz - uz * vy,
+                const dot = ux * vx + uy * vy + uz * vz;
+                const cx = uy * vz - uz * vy,
                     cy = uz * vx - ux * vz,
                     cz = ux * vy - uy * vx;
                 return [
@@ -2018,23 +1722,23 @@
             }
 
             function buildTube(path, radius, segs) {
-                var n = path.length;
+                const n = path.length;
                 if (n < 2) return null;
-                var angles = [];
-                for (var j = 0; j < segs; j++) {
-                    var a = (j / segs) * Math.PI * 2;
+                const angles = [];
+                for (let j = 0; j < segs; j++) {
+                    const a = (j / segs) * Math.PI * 2;
                     angles.push({ c: Math.cos(a), s: Math.sin(a) });
                 }
 
                 // Parallel transport
-                var dx = path[1].x - path[0].x,
+                let dx = path[1].x - path[0].x,
                     dy = path[1].y - path[0].y,
                     dz = path[1].z - path[0].z;
-                var tl = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                var Tx = dx / tl,
+                let tl = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                let Tx = dx / tl,
                     Ty = dy / tl,
                     Tz = dz / tl;
-                var Nx = 0,
+                let Nx = 0,
                     Ny = 1,
                     Nz = 0;
                 if (Math.abs(Tx * Nx + Ty * Ny + Tz * Nz) > 0.99) {
@@ -2042,52 +1746,54 @@
                     Ny = 0;
                     Nz = 0;
                 }
-                var cx = Ty * Nz - Tz * Ny,
+                let cx = Ty * Nz - Tz * Ny,
                     cy = Tz * Nx - Tx * Nz,
                     cz = Tx * Ny - Ty * Nx;
-                var cl = Math.sqrt(cx * cx + cy * cy + cz * cz);
+                let cl = Math.sqrt(cx * cx + cy * cy + cz * cz);
                 if (cl > 0) {
                     Nx = cx / cl;
                     Ny = cy / cl;
                     Nz = cz / cl;
                 }
-                var Bx = Ty * Nz - Tz * Ny,
+                let Bx = Ty * Nz - Tz * Ny,
                     By = Tz * Nx - Tx * Nz,
                     Bz = Tx * Ny - Ty * Nx;
 
-                var positions = new Float32Array(n * segs * 3);
-                var normals = new Float32Array(n * segs * 3);
+                const positions = new Float32Array(n * segs * 3);
+                const normals = new Float32Array(n * segs * 3);
 
-                for (var i = 0; i < n; i++) {
+                for (let i = 0; i < n; i++) {
                     if (i > 0) {
-                        var dTx = path[i].x - path[i - 1].x,
+                        let dTx = path[i].x - path[i - 1].x,
                             dTy = path[i].y - path[i - 1].y,
                             dTz = path[i].z - path[i - 1].z;
-                        var dl = Math.sqrt(dTx * dTx + dTy * dTy + dTz * dTz);
+                        let dl = Math.sqrt(dTx * dTx + dTy * dTy + dTz * dTz);
                         if (dl > 1e-6) {
                             dTx /= dl;
                             dTy /= dl;
                             dTz /= dl;
-                            var ax = Ty * dTz - Tz * dTy,
+                            const ax = Ty * dTz - Tz * dTy,
                                 ay = Tz * dTx - Tx * dTz,
                                 az = Tx * dTy - Ty * dTx;
-                            var axLen = Math.sqrt(ax * ax + ay * ay + az * az);
+                            const axLen = Math.sqrt(
+                                ax * ax + ay * ay + az * az,
+                            );
                             if (axLen > 1e-4) {
-                                var dotT = Math.min(
+                                const dotT = Math.min(
                                     Math.max(
                                         Tx * dTx + Ty * dTy + Tz * dTz,
                                         -1,
                                     ),
                                     1,
                                 );
-                                var angle = Math.acos(dotT);
-                                var ux = ax / axLen,
+                                const angle = Math.acos(dotT);
+                                const ux = ax / axLen,
                                     uy = ay / axLen,
                                     uz = az / axLen;
-                                var ca2 = Math.cos(angle),
+                                const ca2 = Math.cos(angle),
                                     sa2 = Math.sin(angle),
                                     t2 = 1 - ca2;
-                                var rN = rotVec(
+                                const rN = rotVec(
                                     Nx,
                                     Ny,
                                     Nz,
@@ -2101,7 +1807,7 @@
                                 Nx = rN[0];
                                 Ny = rN[1];
                                 Nz = rN[2];
-                                var rB = rotVec(
+                                const rB = rotVec(
                                     Bx,
                                     By,
                                     Bz,
@@ -2121,19 +1827,21 @@
                             Tz = dTz;
                         }
                     }
-                    var base = i * segs * 3;
-                    for (var j2 = 0; j2 < segs; j2++) {
-                        var ag = angles[j2];
-                        var nx2 = Nx * ag.c + Bx * ag.s,
+                    const base = i * segs * 3;
+                    for (let j2 = 0; j2 < segs; j2++) {
+                        const ag = angles[j2];
+                        let nx2 = Nx * ag.c + Bx * ag.s,
                             ny2 = Ny * ag.c + By * ag.s,
                             nz2 = Nz * ag.c + Bz * ag.s;
-                        var nl2 = Math.sqrt(nx2 * nx2 + ny2 * ny2 + nz2 * nz2);
+                        const nl2 = Math.sqrt(
+                            nx2 * nx2 + ny2 * ny2 + nz2 * nz2,
+                        );
                         if (nl2 > 0) {
                             nx2 /= nl2;
                             ny2 /= nl2;
                             nz2 /= nl2;
                         }
-                        var idx3 = base + j2 * 3;
+                        const idx3 = base + j2 * 3;
                         positions[idx3] = path[i].x + nx2 * radius;
                         positions[idx3 + 1] = path[i].y + ny2 * radius;
                         positions[idx3 + 2] = path[i].z + nz2 * radius;
@@ -2143,15 +1851,15 @@
                     }
                 }
 
-                var indArr = new Uint32Array((n - 1) * segs * 6);
-                var idx = 0;
-                for (var ii = 0; ii < n - 1; ii++) {
-                    var i1 = ii * segs,
+                const indArr = new Uint32Array((n - 1) * segs * 6);
+                let idx = 0;
+                for (let ii = 0; ii < n - 1; ii++) {
+                    const i1 = ii * segs,
                         i2 = (ii + 1) * segs;
-                    for (var jj = 0; jj < segs; jj++) {
-                        var c1 = i1 + jj,
-                            n1 = i1 + ((jj + 1) % segs),
-                            c2 = i2 + jj,
+                    for (let jj = 0; jj < segs; jj++) {
+                        const c1 = i1 + jj,
+                            n1 = i1 + ((jj + 1) % segs);
+                        const c2 = i2 + jj,
                             n2 = i2 + ((jj + 1) % segs);
                         indArr[idx++] = c1;
                         indArr[idx++] = n1;
@@ -2162,7 +1870,7 @@
                     }
                 }
 
-                var geo = new THREE.BufferGeometry();
+                const geo = new THREE.BufferGeometry();
                 geo.setAttribute(
                     "position",
                     new THREE.BufferAttribute(positions, 3),
@@ -2176,18 +1884,17 @@
             }
 
             function processGeometry(points, tubeDiameter, collinearAngle) {
-                var radius = tubeDiameter / 2;
-                var layers = {};
-                var gMin = { x: 1e9, y: 1e9, z: 1e9 };
-                var gMax = { x: -1e9, y: -1e9, z: -1e9 };
-                var origCount = 0,
+                const radius = tubeDiameter / 2;
+                const layers = {};
+                const gMin = { x: 1e9, y: 1e9, z: 1e9 };
+                const gMax = { x: -1e9, y: -1e9, z: -1e9 };
+                let origCount = 0,
                     optCount = 0;
 
-                for (var i = 0; i < points.length; i++) {
-                    var p = points[i];
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
                     if (!p.isExtrusion) continue;
-                    // Coordinate mapping identical to Swift: (x, z, -y)
-                    var pos = { x: p.x, y: p.z, z: -p.y };
+                    const pos = { x: p.x, y: p.z, z: -p.y };
                     if (!layers[p.layer]) layers[p.layer] = [];
                     layers[p.layer].push(pos);
                     if (pos.x < gMin.x) gMin.x = pos.x;
@@ -2198,29 +1905,29 @@
                     if (pos.z > gMax.z) gMax.z = pos.z;
                 }
 
-                var layerKeys = Object.keys(layers)
+                const layerKeys = Object.keys(layers)
                     .map(Number)
                     .sort(function (a, b) {
                         return a - b;
                     });
-                var meshes = [];
+                const meshes = [];
 
-                for (var li = 0; li < layerKeys.length; li++) {
-                    var layerID = layerKeys[li];
-                    var pts = layers[layerID];
+                for (let li = 0; li < layerKeys.length; li++) {
+                    const layerID = layerKeys[li];
+                    let pts = layers[layerID];
                     origCount += pts.length;
                     if (collinearAngle > 0)
                         pts = removeCollinear(pts, collinearAngle);
                     optCount += pts.length;
                     if (pts.length < 2) continue;
-                    var geo = buildTube(pts, radius, 8);
+                    const geo = buildTube(pts, radius, 8);
                     if (geo) meshes.push({ id: layerID, geo: geo });
                 }
 
                 return {
-                    meshes: meshes,
-                    gMin: gMin,
-                    gMax: gMax,
+                    meshes,
+                    gMin,
+                    gMax,
                     originalCount: origCount,
                     optimizedCount: optCount,
                 };
@@ -2230,23 +1937,23 @@
             //  MATERIAL
             // ════════════════════════════════════════
             function makeMaterial(preset, colorHex) {
-                var color = new THREE.Color(colorHex);
+                const color = new THREE.Color(colorHex);
                 switch (preset) {
                     case "matte":
                         return new THREE.MeshLambertMaterial({
-                            color: color,
+                            color,
                             side: THREE.FrontSide,
                         });
                     case "plastic":
                         return new THREE.MeshPhongMaterial({
-                            color: color,
+                            color,
                             shininess: 40,
                             specular: new THREE.Color(0x444444),
                             side: THREE.FrontSide,
                         });
                     case "steel":
                         return new THREE.MeshStandardMaterial({
-                            color: color,
+                            color,
                             metalness: 1.0,
                             roughness: 0.35,
                             side: THREE.FrontSide,
@@ -2262,7 +1969,7 @@
                         });
                     default:
                         return new THREE.MeshLambertMaterial({
-                            color: color,
+                            color,
                             side: THREE.FrontSide,
                         });
                 }
@@ -2273,7 +1980,7 @@
             // ════════════════════════════════════════
             function rebuildScene() {
                 while (gcodeContainer.children.length > 0) {
-                    var child = gcodeContainer.children[0];
+                    const child = gcodeContainer.children[0];
                     child.traverse(function (o) {
                         if (o.geometry) o.geometry.dispose();
                         if (o.material) o.material.dispose();
@@ -2292,13 +1999,16 @@
                 }
                 document.getElementById("empty-state").classList.add("hidden");
 
-                var allMin = { x: 1e9, y: 1e9, z: 1e9 };
-                var allMax = { x: -1e9, y: -1e9, z: -1e9 };
-                var mat = makeMaterial(appState.material, appState.modelColor);
+                const allMin = { x: 1e9, y: 1e9, z: 1e9 };
+                const allMax = { x: -1e9, y: -1e9, z: -1e9 };
+                const mat = makeMaterial(
+                    appState.material,
+                    appState.modelColor,
+                );
 
                 appState.loadedModels.forEach(function (model) {
                     if (!model.isVisible) return;
-                    var grp = new THREE.Group();
+                    const grp = new THREE.Group();
                     grp.name = "model_" + model.id;
                     grp.position.set(
                         model.position.x,
@@ -2306,13 +2016,13 @@
                         model.position.z,
                     );
                     model.meshes.forEach(function (m) {
-                        var mesh = new THREE.Mesh(m.geo, mat);
+                        const mesh = new THREE.Mesh(m.geo, mat);
                         mesh.name = "layer_" + m.id;
                         grp.add(mesh);
                     });
                     gcodeContainer.add(grp);
                     if (model.gMin && model.gMax) {
-                        var px = model.position.x,
+                        const px = model.position.x,
                             py = model.position.y,
                             pz = model.position.z;
                         if (model.gMin.x + px < allMin.x)
@@ -2331,7 +2041,7 @@
                 });
 
                 if (allMin.x < 1e9) {
-                    var sX = allMax.x - allMin.x,
+                    const sX = allMax.x - allMin.x,
                         sY = allMax.y - allMin.y,
                         sZ = allMax.z - allMin.z;
                     maxDimension = Math.max(
@@ -2352,7 +2062,7 @@
                         "No model loaded";
                     return;
                 }
-                var names = appState.loadedModels
+                const names = appState.loadedModels
                     .filter(function (m) {
                         return m.isVisible;
                     })
@@ -2373,26 +2083,26 @@
                 gridGroup.name = "grid";
                 gridGroup.visible = appState.showAxis;
 
-                var steps = [10, 50, 100, 500, 1000, 5000];
-                var idealStep = (dim * 2) / 10;
-                var step = steps[steps.length - 1];
-                for (var si = 0; si < steps.length; si++) {
+                const steps = [10, 50, 100, 500, 1000, 5000];
+                const idealStep = (dim * 2) / 10;
+                let step = steps[steps.length - 1];
+                for (let si = 0; si < steps.length; si++) {
                     if (idealStep <= steps[si]) {
                         step = steps[si];
                         break;
                     }
                 }
-                var extent = dim * 2,
+                const extent = dim * 2,
                     half = extent / 2;
 
-                var gridPts = [];
-                for (var gz = -half; gz <= half + 0.001; gz += step) {
+                const gridPts = [];
+                for (let gz = -half; gz <= half + 0.001; gz += step) {
                     gridPts.push(-half, 0, gz, half, 0, gz);
                 }
-                for (var gx = -half; gx <= half + 0.001; gx += step) {
+                for (let gx = -half; gx <= half + 0.001; gx += step) {
                     gridPts.push(gx, 0, -half, gx, 0, half);
                 }
-                var gridGeo = new THREE.BufferGeometry();
+                const gridGeo = new THREE.BufferGeometry();
                 gridGeo.setAttribute(
                     "position",
                     new THREE.BufferAttribute(new Float32Array(gridPts), 3),
@@ -2404,18 +2114,18 @@
                     ),
                 );
 
-                var axisLen = dim * 1.2,
+                const axisLen = dim * 1.2,
                     axisR = dim * 0.004;
                 function addAxis(axis, color) {
-                    var g = new THREE.CylinderGeometry(
+                    const g = new THREE.CylinderGeometry(
                         axisR,
                         axisR,
                         axisLen,
                         8,
                     );
-                    var m2 = new THREE.Mesh(
+                    const m2 = new THREE.Mesh(
                         g,
-                        new THREE.MeshBasicMaterial({ color: color }),
+                        new THREE.MeshBasicMaterial({ color }),
                     );
                     if (axis === "x") {
                         m2.rotation.z = Math.PI / 2;
@@ -2451,10 +2161,10 @@
                     rotAnim = null;
                     gcodeContainer.rotation.y = 0;
                 }
-                var fovRad = (camera.fov * Math.PI) / 180;
-                var dist = (maxDimension * 1.5) / Math.tan(fovRad / 2);
-                var h = modelCenterY;
-                var pos;
+                const fovRad = (camera.fov * Math.PI) / 180;
+                const dist = (maxDimension * 1.5) / Math.tan(fovRad / 2);
+                const h = modelCenterY;
+                let pos;
                 switch (view) {
                     case "front":
                         pos = [0, h, dist];
@@ -2501,10 +2211,10 @@
                     gcodeContainer.rotation.y = 0;
                     return;
                 }
-                var start = performance.now(),
+                const start = performance.now(),
                     dur = 3000;
                 function step(now) {
-                    var t = (now - start) / dur;
+                    const t = (now - start) / dur;
                     gcodeContainer.rotation.y = t * Math.PI * 2;
                     if (t < 1) rotAnim = requestAnimationFrame(step);
                     else {
@@ -2525,7 +2235,7 @@
             }
             function readFile(file) {
                 return new Promise(function (resolve, reject) {
-                    var reader = new FileReader();
+                    const reader = new FileReader();
                     reader.onload = function (e) {
                         resolve(e.target.result);
                     };
@@ -2535,7 +2245,7 @@
             }
 
             function setLoading(show, title, sub) {
-                var el = document.getElementById("loading-overlay");
+                const el = document.getElementById("loading-overlay");
                 el.classList.toggle("show", !!show);
                 if (title)
                     document.getElementById("load-title").textContent = title;
@@ -2543,7 +2253,7 @@
             }
 
             function setProgress(t) {
-                var pct = Math.min(100, Math.round(t * 100));
+                const pct = Math.min(100, Math.round(t * 100));
                 document.getElementById("load-fill").style.width = pct + "%";
                 document.getElementById("progress-fill").style.width =
                     pct + "%";
@@ -2554,7 +2264,7 @@
             async function loadSelectedFile() {
                 if (appState.selectedFileIndex < 0 || appState.isLoading)
                     return;
-                var item = appState.fileItems[appState.selectedFileIndex];
+                const item = appState.fileItems[appState.selectedFileIndex];
                 if (!item) return;
 
                 appState.isLoading = true;
@@ -2563,8 +2273,8 @@
                 setProgress(0.1);
 
                 try {
-                    var t0 = performance.now();
-                    var text = await readFile(item.file);
+                    const t0 = performance.now();
+                    const text = await readFile(item.file);
                     log(
                         "Loaded: " +
                             item.name +
@@ -2576,7 +2286,7 @@
                     setProgress(0.35);
                     await sleep(20);
 
-                    var points = parseGCode(text, function (p) {
+                    const points = parseGCode(text, function (p) {
                         setProgress(0.35 + p * 0.25);
                     });
                     log(
@@ -2594,24 +2304,23 @@
                     setProgress(0.65);
                     await sleep(20);
 
-                    var result = processGeometry(
+                    const result = processGeometry(
                         points,
                         appState.tubeDiameter,
                         appState.collinearAngle,
                     );
                     setProgress(1.0);
 
-                    // Dispose old
                     appState.loadedModels.forEach(function (m) {
                         m.meshes.forEach(function (x) {
                             x.geo.dispose();
                         });
                     });
-                    var model = {
+                    const model = {
                         id: Math.random().toString(36).slice(2),
                         name: item.name,
                         file: item.file,
-                        points: points,
+                        points,
                         meshes: result.meshes,
                         gMin: result.gMin,
                         gMax: result.gMax,
@@ -2641,7 +2350,7 @@
             async function addModel() {
                 if (appState.selectedFileIndex < 0 || appState.isLoading)
                     return;
-                var item = appState.fileItems[appState.selectedFileIndex];
+                const item = appState.fileItems[appState.selectedFileIndex];
                 if (!item) return;
                 if (
                     appState.loadedModels.some(function (m) {
@@ -2657,30 +2366,30 @@
                 setProgress(0.1);
 
                 try {
-                    var text = await readFile(item.file);
+                    const text = await readFile(item.file);
                     setProgress(0.4);
                     await sleep(20);
-                    var points = parseGCode(text, function () {});
+                    const points = parseGCode(text, function () {});
                     setProgress(0.7);
                     await sleep(20);
-                    var result = processGeometry(
+                    const result = processGeometry(
                         points,
                         appState.tubeDiameter,
                         appState.collinearAngle,
                     );
                     setProgress(1.0);
 
-                    var posX = 0;
+                    let posX = 0;
                     appState.loadedModels.forEach(function (m) {
                         if (m.gMax)
                             posX = Math.max(posX, m.gMax.x + m.position.x + 50);
                     });
 
-                    var model = {
+                    const model = {
                         id: Math.random().toString(36).slice(2),
                         name: item.name,
                         file: item.file,
-                        points: points,
+                        points,
                         meshes: result.meshes,
                         gMin: result.gMin,
                         gMax: result.gMax,
@@ -2710,16 +2419,16 @@
             //  MODELS PANEL
             // ════════════════════════════════════════
             function renderModelsPanel() {
-                var panel = document.getElementById("models-panel");
+                const panel = document.getElementById("models-panel");
                 if (appState.loadedModels.length === 0) {
                     panel.innerHTML =
                         '<div style="color:var(--text3);font-size:10px;padding:8px 0;">No models loaded</div>';
                     return;
                 }
-                var html = "";
+                let html = "";
                 appState.loadedModels.forEach(function (m) {
-                    var isSel = m.id === appState.selectedModelID;
-                    var isHid = !m.isVisible;
+                    const isSel = m.id === appState.selectedModelID;
+                    const isHid = !m.isVisible;
                     html +=
                         '<div class="model-item ' +
                         (isSel ? "selected" : "") +
@@ -2737,24 +2446,23 @@
                         m.id +
                         "')\">" +
                         (m.isVisible ? "👁" : "🚫") +
-                        "</button>" +
-                        "</div>";
+                        "</button></div>";
                 });
 
-                var sel = appState.loadedModels.find(function (m) {
+                const sel = appState.loadedModels.find(function (m) {
                     return m.id === appState.selectedModelID;
                 });
                 if (sel) {
-                    var sX = sel.gMax
+                    const sX = sel.gMax
                         ? (sel.gMax.x - sel.gMin.x).toFixed(1)
                         : "?";
-                    var sY = sel.gMax
+                    const sY = sel.gMax
                         ? (sel.gMax.z - sel.gMin.z).toFixed(1)
                         : "?";
-                    var sZ = sel.gMax
+                    const sZ = sel.gMax
                         ? (sel.gMax.y - sel.gMin.y).toFixed(1)
                         : "?";
-                    var red =
+                    const red =
                         sel.originalCount > 0
                             ? (
                                   (1 - sel.optimizedCount / sel.originalCount) *
@@ -2805,12 +2513,12 @@
             }
 
             function toggleModelVis(id) {
-                var m = appState.loadedModels.find(function (x) {
+                const m = appState.loadedModels.find(function (x) {
                     return x.id === id;
                 });
                 if (!m) return;
                 m.isVisible = !m.isVisible;
-                var grp = gcodeContainer.getObjectByName("model_" + id);
+                const grp = gcodeContainer.getObjectByName("model_" + id);
                 if (grp) grp.visible = m.isVisible;
                 log((m.isVisible ? "👁 Shown: " : "🚫 Hidden: ") + m.name);
                 renderModelsPanel();
@@ -2818,11 +2526,11 @@
             }
 
             function removeModel(id) {
-                var idx = appState.loadedModels.findIndex(function (m) {
+                const idx = appState.loadedModels.findIndex(function (m) {
                     return m.id === id;
                 });
                 if (idx < 0) return;
-                var m = appState.loadedModels[idx];
+                const m = appState.loadedModels[idx];
                 m.meshes.forEach(function (x) {
                     x.geo.dispose();
                 });
@@ -2839,7 +2547,7 @@
             }
 
             function updateModelPos(id) {
-                var m = appState.loadedModels.find(function (x) {
+                const m = appState.loadedModels.find(function (x) {
                     return x.id === id;
                 });
                 if (!m) return;
@@ -2849,7 +2557,7 @@
                     parseFloat(document.getElementById("pos-y").value) || 0;
                 m.position.z =
                     parseFloat(document.getElementById("pos-z").value) || 0;
-                var grp = gcodeContainer.getObjectByName("model_" + id);
+                const grp = gcodeContainer.getObjectByName("model_" + id);
                 if (grp)
                     grp.position.set(m.position.x, m.position.y, m.position.z);
                 log(
@@ -2865,12 +2573,12 @@
             }
 
             function resetModelPos(id) {
-                var m = appState.loadedModels.find(function (x) {
+                const m = appState.loadedModels.find(function (x) {
                     return x.id === id;
                 });
                 if (!m) return;
                 m.position = { x: 0, y: 0, z: 0 };
-                var grp = gcodeContainer.getObjectByName("model_" + id);
+                const grp = gcodeContainer.getObjectByName("model_" + id);
                 if (grp) grp.position.set(0, 0, 0);
                 renderModelsPanel();
                 log("Reset position: " + m.name);
@@ -2896,7 +2604,7 @@
             }
 
             async function applyDiameter() {
-                var v = parseFloat(
+                const v = parseFloat(
                     document.getElementById("tube-slider").value,
                 );
                 if (v === appState.tubeDiameter) return;
@@ -2908,12 +2616,12 @@
                     "New diameter: " + v + " mm",
                 );
                 await sleep(20);
-                for (var i = 0; i < appState.loadedModels.length; i++) {
-                    var m = appState.loadedModels[i];
+                for (let i = 0; i < appState.loadedModels.length; i++) {
+                    const m = appState.loadedModels[i];
                     m.meshes.forEach(function (x) {
                         x.geo.dispose();
                     });
-                    var r = processGeometry(
+                    const r = processGeometry(
                         m.points,
                         appState.tubeDiameter,
                         appState.collinearAngle,
@@ -2932,7 +2640,7 @@
             }
 
             async function applyCollinear() {
-                var v = parseFloat(
+                const v = parseFloat(
                     document.getElementById("collinear-slider").value,
                 );
                 appState.collinearAngle = v;
@@ -2943,12 +2651,12 @@
                     "Collinear: " + v + "°",
                 );
                 await sleep(20);
-                for (var i = 0; i < appState.loadedModels.length; i++) {
-                    var m = appState.loadedModels[i];
+                for (let i = 0; i < appState.loadedModels.length; i++) {
+                    const m = appState.loadedModels[i];
                     m.meshes.forEach(function (x) {
                         x.geo.dispose();
                     });
-                    var r = processGeometry(
+                    const r = processGeometry(
                         m.points,
                         appState.tubeDiameter,
                         appState.collinearAngle,
@@ -2970,26 +2678,26 @@
             //  ANALYTICS
             // ════════════════════════════════════════
             function calculateAnalytics() {
-                var model = appState.loadedModels[0];
+                const model = appState.loadedModels[0];
                 if (!model) return;
                 log("Calculating analytics: " + model.name);
-                var t0 = performance.now();
-                var points = model.points;
-                var minX = 1e9,
+                const t0 = performance.now();
+                const points = model.points;
+                let minX = 1e9,
                     maxX = -1e9,
                     minY = 1e9,
                     maxY = -1e9,
                     minZ = 1e9,
                     maxZ = -1e9;
-                var extPath = 0,
+                let extPath = 0,
                     maxF = 0,
                     printTime = 0,
                     extCount = 0,
                     totalE = 0,
                     lastE = 0;
-                var layerSet = {};
-                for (var i = 0; i < points.length; i++) {
-                    var p = points[i];
+                const layerSet = {};
+                for (let i = 0; i < points.length; i++) {
+                    const p = points[i];
                     layerSet[p.layer] = true;
                     if (p.isExtrusion) {
                         extCount++;
@@ -3000,25 +2708,25 @@
                         if (p.z < minZ) minZ = p.z;
                         if (p.z > maxZ) maxZ = p.z;
                         if (p.f > maxF) maxF = p.f;
-                        var dE = p.e - lastE;
+                        const dE = p.e - lastE;
                         if (dE > 0) totalE += dE;
                         lastE = p.e;
                     }
                     if (i > 0) {
-                        var prev = points[i - 1];
-                        var dx = p.x - prev.x,
+                        const prev = points[i - 1];
+                        const dx = p.x - prev.x,
                             dy = p.y - prev.y,
                             dz = p.z - prev.z;
-                        var dSq = dx * dx + dy * dy + dz * dz;
+                        const dSq = dx * dx + dy * dy + dz * dz;
                         if (dSq > 1e-6) {
-                            var dist = Math.sqrt(dSq);
+                            const dist = Math.sqrt(dSq);
                             if (p.isExtrusion) extPath += dist;
                             printTime += dist / (p.f > 0 ? p.f : 1000);
                         }
                     }
                 }
-                var numLayers = Object.keys(layerSet).length;
-                var red =
+                const numLayers = Object.keys(layerSet).length;
+                const red =
                     model.originalCount > 0
                         ? (
                               (1 - model.optimizedCount / model.originalCount) *
@@ -3035,7 +2743,7 @@
                     extrusionPathLength: extPath,
                     maxSpeedMmPerMin: maxF,
                     estimatedPrintTimeMin: printTime,
-                    numLayers: numLayers,
+                    numLayers,
                     totalExtrusion: totalE,
                     originalExtrusionPoints: model.originalCount,
                     optimizedExtrusionPoints: model.optimizedCount,
@@ -3050,12 +2758,12 @@
             }
 
             function renderAnalytics() {
-                var s = appState.stats;
+                const s = appState.stats;
                 if (!s) return;
-                var f2 = function (n) {
+                const f2 = function (n) {
                     return typeof n === "number" ? n.toFixed(2) : n;
                 };
-                var fT = function (min) {
+                const fT = function (min) {
                     return min > 60
                         ? (min / 60).toFixed(1) + " h"
                         : min.toFixed(1) + " min";
@@ -3076,8 +2784,7 @@
                     " mm</span></div>" +
                     '<div class="stat-row"><span class="stat-key">Height (Z)</span><span class="stat-val accent">' +
                     f2(s.height) +
-                    " mm</span></div>" +
-                    "</div>" +
+                    " mm</span></div></div>" +
                     '<div class="stat-group"><div class="stat-group-title">&#128424; Print Info</div>' +
                     '<div class="stat-row"><span class="stat-key">Extrusion pts</span><span class="stat-val">' +
                     s.extrusionPoints.toLocaleString() +
@@ -3096,8 +2803,7 @@
                     "</span></div>" +
                     '<div class="stat-row"><span class="stat-key">Total extrusion</span><span class="stat-val">' +
                     f2(s.totalExtrusion) +
-                    " mm</span></div>" +
-                    "</div>" +
+                    " mm</span></div></div>" +
                     '<div class="stat-group"><div class="stat-group-title">&#9889; Optimization</div>' +
                     '<div class="stat-row"><span class="stat-key">Original pts</span><span class="stat-val">' +
                     s.originalExtrusionPoints.toLocaleString() +
@@ -3107,15 +2813,14 @@
                     "</span></div>" +
                     '<div class="stat-row"><span class="stat-key">Reduction</span><span class="stat-val accent">' +
                     s.optimizationReductionPercent +
-                    "%</span></div>" +
-                    "</div>";
+                    "%</span></div></div>";
             }
 
             // ════════════════════════════════════════
             //  TABS
             // ════════════════════════════════════════
             function switchTab(name) {
-                var tabs = ["analytics", "log"];
+                const tabs = ["analytics", "log"];
                 document.querySelectorAll(".tab").forEach(function (t, i) {
                     t.classList.toggle("active", tabs[i] === name);
                 });
@@ -3130,43 +2835,46 @@
             async function exportVideo() {
                 if (appState.loadedModels.length === 0) return;
                 if (!window.MediaRecorder) {
-                    log("MediaRecorder not supported in this browser");
+                    log("MediaRecorder not supported");
                     return;
                 }
-                var w =
+                const w =
                     parseInt(document.getElementById("vid-w").value) || 1920;
-                var h =
+                const h =
                     parseInt(document.getElementById("vid-h").value) || 1080;
                 log("Recording " + w + "x" + h + " video...");
 
-                var offCanvas = document.createElement("canvas");
+                const offCanvas = document.createElement("canvas");
                 offCanvas.width = w;
                 offCanvas.height = h;
-                var offRenderer = new THREE.WebGLRenderer({
+                const offRenderer = new THREE.WebGLRenderer({
                     canvas: offCanvas,
                     antialias: true,
                 });
                 offRenderer.setSize(w, h);
                 offRenderer.setPixelRatio(1);
+                offRenderer.outputColorSpace = THREE.SRGBColorSpace;
+                offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+                offRenderer.toneMappingExposure = 1.2;
 
-                var stream = offCanvas.captureStream(30);
-                var mimeType = "video/webm;codecs=vp9";
+                const stream = offCanvas.captureStream(30);
+                let mimeType = "video/webm;codecs=vp9";
                 if (!MediaRecorder.isTypeSupported(mimeType))
                     mimeType = "video/webm";
-                var rec = new MediaRecorder(stream, {
-                    mimeType: mimeType,
+                const rec = new MediaRecorder(stream, {
+                    mimeType,
                     videoBitsPerSecond: 8000000,
                 });
-                var chunks = [];
+                const chunks = [];
                 rec.ondataavailable = function (e) {
                     chunks.push(e.data);
                 };
 
-                var fps = 30,
+                const fps = 30,
                     dur = 3.0,
                     total = Math.round(fps * dur);
                 rec.start();
-                for (var i = 0; i < total; i++) {
+                for (let i = 0; i < total; i++) {
                     gcodeContainer.rotation.y = (i / total) * Math.PI * 2;
                     offRenderer.render(scene, camera);
                     await sleep(1000 / fps);
@@ -3177,9 +2885,9 @@
                     rec.onstop = r;
                 });
 
-                var blob = new Blob(chunks, { type: "video/webm" });
-                var url = URL.createObjectURL(blob);
-                var a = document.createElement("a");
+                const blob = new Blob(chunks, { type: "video/webm" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
                 a.href = url;
                 a.download = "gcode_360.webm";
                 a.click();
@@ -3198,7 +2906,7 @@
             async function savePhotos() {
                 if (appState.loadedModels.length === 0) return;
                 log("Capturing 10 view photos...");
-                var views = [
+                const views = [
                     "top",
                     "bottom",
                     "front",
@@ -3210,12 +2918,12 @@
                     "iso3",
                     "iso4",
                 ];
-                for (var vi = 0; vi < views.length; vi++) {
+                for (let vi = 0; vi < views.length; vi++) {
                     setCameraView(views[vi]);
                     await sleep(250);
                     renderer.render(scene, camera);
-                    var url = canvas.toDataURL("image/png");
-                    var a = document.createElement("a");
+                    const url = canvas.toDataURL("image/png");
+                    const a = document.createElement("a");
                     a.href = url;
                     a.download = "gcode_" + views[vi] + ".png";
                     a.click();
@@ -3225,10 +2933,41 @@
             }
 
             // ════════════════════════════════════════
+            //  EXPORT FUNCTIONS TO WINDOW (для inline onclick)
+            // ════════════════════════════════════════
+            window.togglePanel = togglePanel;
+            window.restorePanel = restorePanel;
+            window.toggleSection = toggleSection;
+            window.openFilePicker = openFilePicker;
+            window.handleFileInput = handleFileInput;
+            window.handleDrop = handleDrop;
+            window.setSort = setSort;
+            window.loadSelectedFile = loadSelectedFile;
+            window.addModel = addModel;
+            window.setCameraView = setCameraView;
+            window.rotate360 = rotate360;
+            window.calculateAnalytics = calculateAnalytics;
+            window.exportVideo = exportVideo;
+            window.savePhotos = savePhotos;
+            window.setMaterial = setMaterial;
+            window.applyDiameter = applyDiameter;
+            window.applyColor = applyColor;
+            window.applyCollinear = applyCollinear;
+            window.toggleAxis = toggleAxis;
+            window.switchTab = switchTab;
+            window.selectModel = selectModel;
+            window.toggleModelVis = toggleModelVis;
+            window.removeModel = removeModel;
+            window.updateModelPos = updateModelPos;
+            window.resetModelPos = resetModelPos;
+
+            // ════════════════════════════════════════
             //  INIT
             // ════════════════════════════════════════
             updateGridAxis(100);
-            log("GCodeVA ready. Drop a .gcode file or click Open.");
+            log(
+                "GCodeVA ready (Three.js r184). Drop a .gcode file or click Open.",
+            );
         </script>
     </body>
 </html>
