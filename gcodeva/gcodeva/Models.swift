@@ -84,11 +84,13 @@ class AppState: ObservableObject {
     @Published var newModelPositionY: Float = 0
     @Published var newModelPositionZ: Float = 0
     
-    @Published var tempTubeDiameter: Float = 4.0
+    @Published var tempTubeDiameter: Float = 6.0
     @Published var tempModelColor: Color = Color(hex: "#e9e5ce")!
-    @Published var tubeDiameter: Float = 4.0
+    @Published var tubeDiameter: Float = 6.0
     @Published var modelColor: Color = Color(hex: "#e9e5ce")!
     @Published var renderTrigger: Int = 0
+    // Отдельный триггер для освещения — не требует перестройки всей геометрии
+    @Published var lightingTrigger: Int = 0
     @Published var tempCollinearAngle: Float = 5.0
     @Published var collinearAngle: Float = 5.0
     
@@ -99,6 +101,22 @@ class AppState: ObservableObject {
     @Published var videoHeight: Int = 1080
     @Published var showAxis: Bool = true
     @Published var modelSize: simd_float3 = simd_float3(1,1,1)
+    @Published var shouldResetCamera = false
+    
+    // MARK: - Освещение
+    // Активный пресет (по умолчанию Relief — лучший для рельефных панелей)
+    @Published var lightingPreset: LightingPreset = .relief
+    // Интенсивность рассеянного фонового света.
+    // Держи низким (< 0.15) чтобы тени были тёмными и рельеф читался.
+    @Published var lightingAmbient: Float = 0.10
+    // Интенсивность главного направленного источника
+    @Published var lightingMainIntensity: Float = 1.60
+    // Горизонтальный угол главного источника: 0°=слева, 90°=спереди, 180°=справа
+    @Published var lightingAngleH: Float = 0
+    // Угол возвышения: чем меньше — тем более скользящий свет, тем глубже рельеф
+    @Published var lightingAngleV: Float = 6
+    // Интенсивность заполняющего источника с противоположной стороны
+    @Published var lightingFillIntensity: Float = 0.25
     @Published var simplifyEpsilon: Float = 0.0
     
     @Published var processedLayers: [LayerMesh] = []
@@ -178,6 +196,7 @@ class AppState: ObservableObject {
                 self.calculateAnalytics()
                 
                 self.isLoading = false
+                self.cameraAction = .front
             }
         }
     }
@@ -870,7 +889,7 @@ class AppState: ObservableObject {
                 T = newT
             }
             
-            var pointNormals = [simd_float3](repeating: simd_float3(0), count: segments)
+            var pointNormals = [simd_float3](repeating: simd_float3(repeating: 0), count: segments)
             for j in 0..<segments {
                 let (cosA, sinA) = precomputedAngles[j]
                 pointNormals[j] = simd_normalize(N * cosA + B * sinA)
@@ -1022,6 +1041,29 @@ class AppState: ObservableObject {
         selectedMaterial = material
         renderTrigger += 1
         log("Material changed to \(material.rawValue) for all models")
+    }
+
+    // MARK: - Управление освещением
+
+    /// Применяет один из готовых пресетов освещения.
+    /// Обновляет все @Published свойства, SceneKit-узлы подхватят изменения
+    /// через lightingTrigger в updateNSView.
+    func applyLightingPreset(_ preset: LightingPreset) {
+        let s = preset.settings
+        lightingPreset       = preset
+        lightingAmbient      = s.ambientIntensity
+        lightingMainIntensity = s.mainIntensity
+        lightingAngleH       = s.mainAngleH
+        lightingAngleV       = s.mainAngleV
+        lightingFillIntensity = s.fillIntensity
+        lightingTrigger += 1
+        log("💡 Lighting preset: \(preset.label)")
+    }
+
+    /// Вызывается когда пользователь двигает любой слайдер освещения.
+    /// Сбрасывает пресет на .custom и сигналит сцене пересчитать источники.
+    func applyLighting() {
+        lightingTrigger += 1
     }
     
     
