@@ -625,34 +625,24 @@ struct ContentView: View {
         }
 
         let accessed = outputURL.startAccessingSecurityScopedResource()
-        defer { if accessed { outputURL.stopAccessingSecurityScopedResource() } }
-
-        // Удаляем существующий файл
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            do {
-                try FileManager.default.removeItem(at: outputURL)
-                appState.log("Existing file removed")
-            } catch {
-                appState.log("Failed to remove existing file: \(error.localizedDescription)")
-                return
-            }
-        }
-
+        
         // 2. Получаем SCNView и узлы модели
         guard let sceneView = appState.sceneView ?? getSceneView(),
               let scene = sceneView.scene else {
             appState.log("SceneView not found")
+            if accessed { outputURL.stopAccessingSecurityScopedResource() }
             return
         }
 
         let modelNodes = findAllGeometryNodes(in: scene.rootNode, excludingNames: ["axis", "grid"])
         guard !modelNodes.isEmpty else {
             appState.log("No model nodes to rotate")
+            if accessed { outputURL.stopAccessingSecurityScopedResource() }
             return
         }
         let originalAngles = modelNodes.map { $0.eulerAngles.y }
 
-        // 3. Параметры видео: Retina-разрешение и частота кадров
+        // 3. Параметры видео
         let scaleFactor = sceneView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
         let pixelWidth  = Int(sceneView.bounds.width * scaleFactor)
         let pixelHeight = Int(sceneView.bounds.height * scaleFactor)
@@ -660,13 +650,17 @@ struct ContentView: View {
         let width  = appState.videoWidth  > 0 ? Int(appState.videoWidth)  : pixelWidth
         let height = appState.videoHeight > 0 ? Int(appState.videoHeight) : pixelHeight
         appState.log("Video size: \(width)x\(height)")
+        
         let totalFrames = 150
         let fps: Int32 = 30
+        let sampleCount = 2
+        let supersampling = 2
 
         // 4. Metal-устройство и рендерер
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
             appState.log("Metal not available")
+            if accessed { outputURL.stopAccessingSecurityScopedResource() }
             return
         }
 
@@ -675,47 +669,25 @@ struct ContentView: View {
         renderer.pointOfView = sceneView.pointOfView
         renderer.autoenablesDefaultLighting = sceneView.autoenablesDefaultLighting
 
-        // 5. Рендеринг всех кадров с MSAA
-        let sampleCount = 2 // 4x мультисэмплинг, как в окне
-        let supersampling: Int = 2  // 1 = нет, 2 = 2x разрешение
-        var pixelBuffers = [CVPixelBuffer]()
-
-        for i in 0..<totalFrames {
-            let progress = Double(i) / Double(totalFrames)
-            let angle = CGFloat(progress * 2.0 * .pi)
-
-            // Поворачиваем модель
-            for (idx, node) in modelNodes.enumerated() {
-                node.eulerAngles.y = originalAngles[idx] + angle
-            }
-            SCNTransaction.flush()
-
-            // Рендерим в пиксельный буфер с MSAA
-            guard let pb = renderFrameToPixelBuffer(renderer: renderer,
-                                                    device: device,
-                                                    commandQueue: commandQueue,
-                                                    width: width, height: height,
-                                                    sampleCount: sampleCount,
-                                                    supersampling: supersampling) else {
-                appState.log("Failed to render frame \(i)")
-                break
-            }
-            pixelBuffers.append(pb)
-        }
-
-        // Восстанавливаем исходный угол
-        for (idx, node) in modelNodes.enumerated() {
-            node.eulerAngles.y = originalAngles[idx]
-        }
-        SCNTransaction.flush()
-
-        guard pixelBuffers.count == totalFrames else {
-            appState.log("Rendered only \(pixelBuffers.count) frames, aborting")
-            return
-        }
-
-        // 6. Асинхронная запись видео с высоким качеством
+        // ВЫНОСИМ ВСЮ ТЯЖЕЛУЮ РАБОТУ В ФОНОВЫЙ ПОТОК
         DispatchQueue.global(qos: .userInitiated).async { [self] in
+            defer {
+                if accessed { outputURL.stopAccessingSecurityScopedResource() }
+                // Восстанавливаем исходный угол на главном потоке
+                DispatchQueue.main.async {
+                    for (idx, node) in modelNodes.enumerated() {
+                        node.eulerAngles.y = originalAngles[idx]
+                    }
+                    SCNTransaction.flush()
+                }
+            }
+
+            // Удаляем существующий файл
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
+
+            // 5. Настройка AVAssetWriter
             let writer: AVAssetWriter
             do {
                 writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
@@ -726,8 +698,7 @@ struct ContentView: View {
 
             let compressionSettings: [String: Any] = [
                 AVVideoQualityKey: 0.7,
-                //AVVideoAverageBitRateKey: width * height * 4,   // битрейт пропорционально пикселям
-                AVVideoMaxKeyFrameIntervalKey: fps * 1          // ключевые кадры каждые 2 секунды
+                AVVideoMaxKeyFrameIntervalKey: fps * 1
             ]
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.hevc,
@@ -736,15 +707,20 @@ struct ContentView: View {
                 AVVideoCompressionPropertiesKey: compressionSettings
             ]
             let writerInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            writerInput.expectsMediaDataInRealTime = true
+            writerInput.expectsMediaDataInRealTime = false // Мы подаем данные не в реальном времени
 
+            // ВАЖНО: Указываем MetalCompatibility и IOSurfaceProperties для Zero-Copy рендеринга
+            let sourcePixelBufferAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferMetalCompatibilityKey as String: true,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any]
+            ]
+            
             let adaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: writerInput,
-                sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                    kCVPixelBufferWidthKey as String: width,
-                    kCVPixelBufferHeightKey as String: height
-                ]
+                sourcePixelBufferAttributes: sourcePixelBufferAttributes
             )
 
             guard writer.canAdd(writerInput) else {
@@ -754,27 +730,123 @@ struct ContentView: View {
             writer.add(writerInput)
 
             guard writer.startWriting() else {
-                DispatchQueue.main.async {
-                    appState.log("Writer startWriting failed: \(writer.error?.localizedDescription ?? "")")
-                }
+                DispatchQueue.main.async { appState.log("Writer startWriting failed: \(writer.error?.localizedDescription ?? "")") }
                 return
             }
             writer.startSession(atSourceTime: .zero)
 
+            // 6. ПРЕДВАРИТЕЛЬНОЕ СОЗДАНИЕ РЕСУРСОВ METAL (Переиспользование)
+            let renderWidth = width * supersampling
+            let renderHeight = height * supersampling
+            let pixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
+
+            // Текстура для Resolve из MSAA или для промежуточного суперсэмплинга
+            var renderTexture: MTLTexture?
+            if supersampling > 1 {
+                let renderDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: renderWidth, height: renderHeight, mipmapped: false)
+                renderDesc.usage = [.renderTarget, .shaderRead]
+                renderDesc.storageMode = .private // Приватная, так как живет на GPU
+                renderTexture = device.makeTexture(descriptor: renderDesc)
+            }
+            
+            // MSAA текстура
+            var msaaTexture: MTLTexture?
+            if sampleCount > 1 {
+                let msaaDesc = MTLTextureDescriptor()
+                msaaDesc.textureType = .type2DMultisample
+                msaaDesc.pixelFormat = pixelFormat
+                msaaDesc.width = renderWidth
+                msaaDesc.height = renderHeight
+                msaaDesc.sampleCount = sampleCount
+                msaaDesc.usage = .renderTarget
+                msaaDesc.storageMode = .private
+                msaaTexture = device.makeTexture(descriptor: msaaDesc)
+            }
+            
+            let scaleFilter = supersampling > 1 ? MPSImageBilinearScale(device: device) : nil
+
             let frameDuration = CMTime(value: 1, timescale: fps)
-            for (i, buffer) in pixelBuffers.enumerated() {
+
+            // 7. ПОТОКОВЫЙ РЕНДЕРИНГ (Без массива кадров)
+            for i in 0..<totalFrames {
+                let progress = Double(i) / Double(totalFrames)
+                let angle = CGFloat(progress * 2.0 * .pi)
+
+                // Поворачиваем модель (безопасно делать на фоне, если нет параллельного рендера вьюшки, но лучше через sync на main)
+                DispatchQueue.main.sync {
+                    for (idx, node) in modelNodes.enumerated() {
+                        node.eulerAngles.y = originalAngles[idx] + angle
+                    }
+                    SCNTransaction.flush()
+                }
+
+                // Берем CVPixelBuffer из пула адаптера (ОЧЕНЬ БЫСТРО)
+                var pixelBuffer: CVPixelBuffer?
+                CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, adaptor.pixelBufferPool!, &pixelBuffer)
+                guard let buffer = pixelBuffer else {
+                    appState.log("Failed to get buffer from pool at frame \(i)")
+                    break
+                }
+
+                // Достаем IOSurface из буфера для прямого рендера в него (ZERO-COPY)
+                guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else {
+                    appState.log("Failed to get IOSurface at frame \(i)")
+                    break
+                }
+
+                let outDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: width, height: height, mipmapped: false)
+                outDesc.usage = [.shaderWrite, .shaderRead, .renderTarget]
+                // Создаем текстуру-обертку над IOSurface (без аллокации новой памяти)
+                guard let outputTexture = device.makeTexture(descriptor: outDesc, iosurface: surface, plane: 0) else {
+                    appState.log("Failed to create output texture from IOSurface at frame \(i)")
+                    break
+                }
+
+                // --- РЕНДЕР СЦЕНЫ ---
+                let passDesc = MTLRenderPassDescriptor()
+                passDesc.colorAttachments[0].loadAction = .clear
+                passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+                // Логика маршрутизации текстур (MSAA + Supersampling)
+                if let msaaTex = msaaTexture {
+                    passDesc.colorAttachments[0].texture = msaaTex
+                    passDesc.colorAttachments[0].storeAction = .multisampleResolve
+                    // Если есть суперсэмплинг, резолвим в промежуточную текстуру, иначе сразу в IOSurface
+                    passDesc.colorAttachments[0].resolveTexture = renderTexture ?? outputTexture
+                } else {
+                    passDesc.colorAttachments[0].texture = renderTexture ?? outputTexture
+                    passDesc.colorAttachments[0].storeAction = .store
+                }
+
+                guard let renderCmdBuf = commandQueue.makeCommandBuffer() else { break }
+                renderer.render(atTime: 0,
+                                viewport: CGRect(x: 0, y: 0, width: CGFloat(renderWidth), height: CGFloat(renderHeight)),
+                                commandBuffer: renderCmdBuf,
+                                passDescriptor: passDesc)
+                renderCmdBuf.commit()
+                renderCmdBuf.waitUntilCompleted() // Ждем завершения GPU
+
+                // --- МАСШТАБИРОВАНИЕ (ЕСЛИ НУЖНО) ---
+                if let scale = scaleFilter, let rTex = renderTexture {
+                    guard let scaleCmdBuf = commandQueue.makeCommandBuffer() else { break }
+                    scale.encode(commandBuffer: scaleCmdBuf, sourceTexture: rTex, destinationTexture: outputTexture)
+                    scaleCmdBuf.commit()
+                    scaleCmdBuf.waitUntilCompleted()
+                }
+
+                // --- ЗАПИСЬ КАДРА В ВИДЕО ---
                 while !writerInput.isReadyForMoreMediaData {
                     Thread.sleep(forTimeInterval: 0.01)
                 }
+                
                 let time = CMTimeMultiply(frameDuration, multiplier: Int32(i))
                 if !adaptor.append(buffer, withPresentationTime: time) {
-                    DispatchQueue.main.async {
-                        appState.log("Failed to append frame \(i)")
-                    }
+                    appState.log("Failed to append frame \(i)")
                     break
                 }
             }
 
+            // 8. Завершение записи
             writerInput.markAsFinished()
             writer.finishWriting {
                 DispatchQueue.main.async {
@@ -788,208 +860,10 @@ struct ContentView: View {
         }
     }
 
-    // Обновлённый рендеринг кадра с мультисэмплингом
-    private func renderFrameToPixelBuffer(renderer: SCNRenderer,
-                                          device: MTLDevice,
-                                          commandQueue: MTLCommandQueue,
-                                          width: Int,
-                                          height: Int,
-                                          sampleCount: Int = 4,
-                                          supersampling: Int = 2) -> CVPixelBuffer? {
-        let pixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
-
-        let renderWidth = width * supersampling
-        let renderHeight = height * supersampling
-
-        // Текстура для рендеринга в увеличенном разрешении
-        let renderDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat,
-                                                                   width: renderWidth,
-                                                                   height: renderHeight,
-                                                                   mipmapped: false)
-        renderDesc.usage = [.renderTarget, .shaderRead]
-        guard let renderTexture = device.makeTexture(descriptor: renderDesc) else { return nil }
-
-        // ---- Этап 1: Рендеринг сцены ----
-        let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-
-        if sampleCount > 1 {
-            let msaaDesc = MTLTextureDescriptor()
-            msaaDesc.textureType = .type2DMultisample
-            msaaDesc.pixelFormat = pixelFormat
-            msaaDesc.width = renderWidth
-            msaaDesc.height = renderHeight
-            msaaDesc.sampleCount = sampleCount
-            msaaDesc.usage = .renderTarget
-            msaaDesc.storageMode = .private
-            guard let msaaTexture = device.makeTexture(descriptor: msaaDesc) else { return nil }
-
-            passDesc.colorAttachments[0].texture = msaaTexture
-            passDesc.colorAttachments[0].storeAction = .multisampleResolve
-            passDesc.colorAttachments[0].resolveTexture = renderTexture
-        } else {
-            passDesc.colorAttachments[0].texture = renderTexture
-            passDesc.colorAttachments[0].storeAction = .store
-        }
-
-        guard let renderCmdBuf = commandQueue.makeCommandBuffer() else { return nil }
-        renderer.render(atTime: 0,
-                        viewport: CGRect(x: 0, y: 0, width: CGFloat(renderWidth), height: CGFloat(renderHeight)),
-                        commandBuffer: renderCmdBuf,
-                        passDescriptor: passDesc)
-        renderCmdBuf.commit()
-        renderCmdBuf.waitUntilCompleted()
-
-        // ---- Этап 2: Уменьшение до целевого разрешения ----
-        guard let scaleCmdBuf = commandQueue.makeCommandBuffer() else { return nil }
-
-        let outputDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat,
-                                                                   width: width,
-                                                                   height: height,
-                                                                   mipmapped: false)
-        outputDesc.usage = [.shaderWrite, .shaderRead]
-        guard let outputTexture = device.makeTexture(descriptor: outputDesc) else { return nil }
-
-        if supersampling > 1 {
-            let scale = MPSImageBilinearScale(device: device)
-            scale.encode(commandBuffer: scaleCmdBuf,
-                        sourceTexture: renderTexture,
-                        destinationTexture: outputTexture)
-        } else {
-            // Если без суперсэмплинга, просто копируем
-            guard let blitEncoder = scaleCmdBuf.makeBlitCommandEncoder() else { return nil }
-            blitEncoder.copy(from: renderTexture,
-                            sourceSlice: 0, sourceLevel: 0,
-                            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                            sourceSize: MTLSize(width: width, height: height, depth: 1),
-                            to: outputTexture,
-                            destinationSlice: 0, destinationLevel: 0,
-                            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-            blitEncoder.endEncoding()
-        }
-
-        scaleCmdBuf.commit()
-        scaleCmdBuf.waitUntilCompleted()
-
-        // ---- Перенос в пиксельный буфер ----
-        var pixelBuffer: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pixelBuffer)
-        guard let buffer = pixelBuffer else { return nil }
-
-        let colorAttachments: [CFString: Any] = [
-            kCVImageBufferColorPrimariesKey: kCVImageBufferColorPrimaries_ITU_R_709_2,
-            kCVImageBufferTransferFunctionKey: kCVImageBufferTransferFunction_ITU_R_709_2,
-            kCVImageBufferYCbCrMatrixKey: kCVImageBufferYCbCrMatrix_ITU_R_709_2
-        ]
-        CVBufferSetAttachments(buffer, colorAttachments as CFDictionary, .shouldPropagate)
-
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-
-        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else { return nil }
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-        let region = MTLRegionMake2D(0, 0, width, height)
-        outputTexture.getBytes(baseAddress, bytesPerRow: bytesPerRow, from: region, mipmapLevel: 0)
-
-        return buffer
-    }
-    
-    private func renderFrameToPixelBuffer0(renderer: SCNRenderer,
-                                          device: MTLDevice,
-                                          commandQueue: MTLCommandQueue,
-                                          width: Int,
-                                          height: Int,
-                                          sampleCount: Int = 1) -> CVPixelBuffer? {
-        // sRGB-формат для автоматической гамма-коррекции
-        let pixelFormat: MTLPixelFormat = .bgra8Unorm_srgb
-
-        // Текстура разрешения (результат)
-        let texDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat,
-                                                               width: width,
-                                                               height: height,
-                                                               mipmapped: false)
-        texDesc.usage = [.renderTarget, .shaderRead]
-        guard let outputTexture = device.makeTexture(descriptor: texDesc) else { return nil }
-
-        // Мультисэмпловая текстура
-        let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-
-        if sampleCount > 1 {
-            // MSAA включён — создаём мультисэмпловую текстуру и настраиваем resolve
-            let msaaDesc = MTLTextureDescriptor()
-            msaaDesc.textureType = .type2DMultisample
-            msaaDesc.pixelFormat = pixelFormat
-            msaaDesc.width = width
-            msaaDesc.height = height
-            msaaDesc.sampleCount = sampleCount
-            msaaDesc.usage = .renderTarget
-            msaaDesc.storageMode = .private
-            guard let msaaTexture = device.makeTexture(descriptor: msaaDesc) else { return nil }
-
-            passDesc.colorAttachments[0].texture = msaaTexture
-            passDesc.colorAttachments[0].storeAction = .multisampleResolve
-            passDesc.colorAttachments[0].resolveTexture = outputTexture
-        } else {
-            // MSAA отключён — рендерим напрямую в outputTexture
-            passDesc.colorAttachments[0].texture = outputTexture
-            passDesc.colorAttachments[0].storeAction = .store
-        }
-
-        guard let cmdBuf = commandQueue.makeCommandBuffer() else { return nil }
-        renderer.render(atTime: 0,
-                        viewport: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)),
-                        commandBuffer: cmdBuf,
-                        passDescriptor: passDesc)
-        cmdBuf.commit()
-        cmdBuf.waitUntilCompleted()
-
-        // Создаём пиксельный буфер с правильным цветовым пространством
-        var pixelBuffer: CVPixelBuffer?
-        let attrs: [String: Any] = [
-            kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
-        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pixelBuffer)
-        guard let buffer = pixelBuffer else { return nil }
-
-        // Присоединяем цветовые свойства (ITU-R BT.709 = sRGB для видео)
-        let colorAttachments: [CFString: Any] = [
-            kCVImageBufferColorPrimariesKey: kCVImageBufferColorPrimaries_ITU_R_709_2,
-            kCVImageBufferTransferFunctionKey: kCVImageBufferTransferFunction_ITU_R_709_2,
-            kCVImageBufferYCbCrMatrixKey: kCVImageBufferYCbCrMatrix_ITU_R_709_2
-        ]
-        CVBufferSetAttachments(buffer, colorAttachments as CFDictionary, .shouldPropagate)
-
-        // Копируем данные из текстуры
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-
-        guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else { return nil }
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
-        let region = MTLRegionMake2D(0, 0, width, height)
-        outputTexture.getBytes(baseAddress, bytesPerRow: bytesPerRow, from: region, mipmapLevel: 0)
-
-        return buffer
-    }
-    
-    
-    /// Рекурсивный поиск узлов с геометрией, исключая указанные имена
+    /// Оптимизированный поиск узлов
     private func findAllGeometryNodes(in node: SCNNode, excludingNames: Set<String>) -> [SCNNode] {
         var result: [SCNNode] = []
-        if node.geometry != nil, let name = node.name, !excludingNames.contains(name) {
-            result.append(node)
-        } else if node.geometry != nil && node.name == nil {
+        if node.geometry != nil, node.name.map { !excludingNames.contains($0) } ?? true {
             result.append(node)
         }
         for child in node.childNodes {
@@ -997,6 +871,7 @@ struct ContentView: View {
         }
         return result
     }
+    
     
     // MARK: - Video Recording
 
