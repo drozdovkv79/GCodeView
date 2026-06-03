@@ -97,8 +97,8 @@ class AppState: ObservableObject {
     @Published var cameraAction: CameraAction = .none
     @Published var selectedMaterial: MaterialPreset = .matte
     @Published var isRecording: Bool = false
-    @Published var videoWidth: Int = 1920
-    @Published var videoHeight: Int = 1080
+    @Published var videoWidth: Int = 738
+    @Published var videoHeight: Int = 1600
     @Published var showAxis: Bool = true
     @Published var modelSize: simd_float3 = simd_float3(1,1,1)
     @Published var shouldResetCamera = false
