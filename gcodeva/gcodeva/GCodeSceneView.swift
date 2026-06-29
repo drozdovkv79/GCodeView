@@ -36,6 +36,7 @@ class CustomSCNView: SCNView {
     
     private var lastMouseLocation: CGPoint = .zero
     private var isDraggingLeft = false
+    private var isDraggedLeft = false
     private var isDraggingRight = false
     
     weak var cameraNode: SCNNode?
@@ -76,6 +77,7 @@ class CustomSCNView: SCNView {
         let deltaY = Float(newLocation.y - lastMouseLocation.y)
         
         if isDraggingLeft {
+            isDraggedLeft = true
             cameraTheta += deltaX * 0.3
             
             // Было: cameraPhi += deltaY * 0.3
@@ -91,11 +93,7 @@ class CustomSCNView: SCNView {
         
         lastMouseLocation = newLocation
     }
-    
-    override func mouseUp(with event: NSEvent) {
-        isDraggingLeft = false
-    }
-    
+        
     // MARK: - Правая кнопка мыши (Панорамирование)
     override func rightMouseDown(with event: NSEvent) {
         lastMouseLocation = locationInView(for: event)
@@ -142,6 +140,32 @@ class CustomSCNView: SCNView {
         }
     }
     
+    // MARK: - 🆕 Измерение расстояний (Обработка кликов)
+    override func mouseUp(with event: NSEvent) {
+        if isDraggedLeft {
+            isDraggedLeft = false
+            isDraggingLeft = false
+            return
+        }
+        isDraggingLeft = false
+        
+        // Доступ к AppState через AppDelegate
+        guard let state = AppDelegate.shared.appState,
+              state.isMeasuringMode else { return }
+        
+        let point = convert(event.locationInWindow, from: nil)
+        
+        // Вызываем hitTest БЕЗ параметра options, чтобы обойти баг моста Swift-ObjC
+        let hitResults = self.hitTest(point, options: nil)
+        
+        if let closestHit = hitResults.first {
+            let worldCoordinates = closestHit.worldCoordinates
+            DispatchQueue.main.async {
+                state.addMeasurePoint(worldCoordinates)
+            }
+        }
+    }
+
     func setCamera(distance: Float, theta: Float, phi: Float, target: SCNVector3) {
         cameraDistance = distance
         cameraTheta = theta
@@ -193,6 +217,7 @@ struct GCodeSceneView: NSViewRepresentable {
         return view
     }
     
+
     private func setupCamera(in view: CustomSCNView) {
         view.scene?.rootNode.childNode(withName: "mainCamera", recursively: false)?.removeFromParentNode()
         let cameraNode = SCNNode()
@@ -362,7 +387,7 @@ struct GCodeSceneView: NSViewRepresentable {
         case .right:  theta = 90;  phi = 0
         case .top:    theta = 0;   phi = 90; newDistance = distance * 0.8
         case .bottom: theta = 0;   phi = -90; newDistance = distance * 0.8
-        case .iso1:   theta = 45;  phi = 30
+        case .iso1:   theta = 45;  phi = 30; newDistance = distance * 0.9
         case .iso2:   theta = -45; phi = 30
         case .iso3:   theta = 45;  phi = -30
         case .iso4:   theta = -45; phi = -30
@@ -408,6 +433,8 @@ struct GCodeSceneView: NSViewRepresentable {
             }
             
             modelNode.position = SCNVector3(model.position.x, model.position.y, model.position.z)
+            // 🆕 Применяем сохраненный поворот вокруг оси Y
+            modelNode.eulerAngles.y = CGFloat(model.rotationY)
             
             if let bbox = model.boundingBox {
                 let minX = bbox.min.x + model.position.x
@@ -451,6 +478,45 @@ struct GCodeSceneView: NSViewRepresentable {
             nsView.setCamera(distance: nsView.cameraDistance, theta: nsView.cameraTheta, phi: nsView.cameraPhi, target: target)
         }
         
+        // MARK: - 🆕 Отрисовка измерений
+        nsView.scene?.rootNode.childNode(withName: "measure_helper", recursively: false)?.removeFromParentNode()
+        
+        if !appState.measurePoints.isEmpty {
+            let measureNode = SCNNode()
+            measureNode.name = "measure_helper"
+            
+            // Шарик для первой точки (Желтый)
+            let sphere1 = SCNSphere(radius: coordinator.maxDimension * 0.008)
+            sphere1.firstMaterial?.diffuse.contents = NSColor.systemYellow
+            sphere1.firstMaterial?.emission.contents = NSColor.systemYellow
+            sphere1.firstMaterial?.lightingModel = .constant
+            let node1 = SCNNode(geometry: sphere1)
+            node1.position = SCNVector3(appState.measurePoints[0])
+            measureNode.addChildNode(node1)
+            
+            if appState.measurePoints.count == 2 {
+                // Шарик для второй точки (Красный)
+                let sphere2 = SCNSphere(radius: coordinator.maxDimension * 0.008)
+                sphere2.firstMaterial?.diffuse.contents = NSColor.systemRed
+                sphere2.firstMaterial?.emission.contents = NSColor.systemRed
+                sphere2.firstMaterial?.lightingModel = .constant
+                let node2 = SCNNode(geometry: sphere2)
+                node2.position = SCNVector3(appState.measurePoints[1])
+                measureNode.addChildNode(node2)
+                
+                // Линия между ними
+                let lineGeometry = createLineGeometry(
+                    from: SCNVector3(appState.measurePoints[0]),
+                    to: SCNVector3(appState.measurePoints[1]),
+                    color: NSColor.systemYellow,
+                    radius: CGFloat(coordinator.maxDimension * 0.003)
+                )
+                measureNode.addChildNode(lineGeometry)
+            }
+            
+            nsView.scene?.rootNode.addChildNode(measureNode)
+        }
+
         let endTime = CFAbsoluteTimeGetCurrent()
         appState.log("⏱ 3D Scene Render (\(appState.loadedModels.count) models): \(String(format: "%.2f", (endTime - startTime) * 1000)) ms")
     }
@@ -557,6 +623,66 @@ struct GCodeSceneView: NSViewRepresentable {
         return mat
     }
     
+    // MARK: - 🆕 Создание 3D линии (цилиндр) между двумя точками
+    private func createLineGeometry(from: SCNVector3, to: SCNVector3, color: NSColor, radius: CGFloat) -> SCNNode {
+        let vector = SCNVector3(to.x - from.x, to.y - from.y, to.z - from.z)
+        let distance = sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+        
+        guard distance > 0 else { return SCNNode() }
+        
+        let cylinder = SCNCylinder(radius: radius, height: CGFloat(distance))
+        cylinder.firstMaterial?.diffuse.contents = color
+        cylinder.firstMaterial?.emission.contents = color
+        cylinder.firstMaterial?.lightingModel = .constant
+        
+        let lineNode = SCNNode(geometry: cylinder)
+        lineNode.position = SCNVector3((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2)
+        
+        let yAxis = SCNVector3(0, 1, 0)
+        /*let normalizedVector = SCNVector3(vector.x / Float(distance), vector.y / Float(distance), vector.z / Float(distance))
+        
+        let cross = SCNVector3(yAxis.y * normalizedVector.z - yAxis.z * normalizedVector.y,
+                               yAxis.z * normalizedVector.x - yAxis.x * normalizedVector.z,
+                               yAxis.x * normalizedVector.y - yAxis.y * normalizedVector.x)
+        */
+        // 1. Сразу конвертируем дистанцию в Float
+        let floatDistance = CGFloat(distance)
+
+        // 2. Выносим координаты в простые переменные
+        let vx = vector.x
+        let vy = vector.y
+        let vz = vector.z
+
+        // 3. Вычисляем и собираем вектор
+        let normalizedVector = SCNVector3(vx / floatDistance, vy / floatDistance, vz / floatDistance)
+        
+        // 1. Извлекаем компоненты векторов в простые переменные (CGFloat или Float)
+        let yx = yAxis.x
+        let yy = yAxis.y
+        let yz = yAxis.z
+
+        let nx = normalizedVector.x
+        let ny = normalizedVector.y
+        let nz = normalizedVector.z
+
+        // 2. Считаем каждую компоненту отдельно
+        let crossX = yy * nz - yz * ny
+        let crossY = yz * nx - yx * nz
+        let crossZ = yx * ny - yy * nx
+
+        // 3. Инициализируем итоговый вектор
+        let cross = SCNVector3(crossX, crossY, crossZ)
+        
+        
+        let dot = yAxis.x * normalizedVector.x + yAxis.y * normalizedVector.y + yAxis.z * normalizedVector.z
+        
+        let angle = acos(min(max(dot, -1.0), 1.0))
+        
+        lineNode.rotation = SCNVector4(cross.x, cross.y, cross.z, CGFloat(angle))
+        
+        return lineNode
+    }
+
     private func getMaterial(preset: MaterialPreset, color: NSColor) -> SCNMaterial {
         let mat = SCNMaterial()
         mat.diffuse.contents = color

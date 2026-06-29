@@ -3,12 +3,15 @@ import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
 import MetalPerformanceShaders
+import CoreImage    // 🆕 REPORT
+import Metal         // 🆕 REPORT
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
     @State private var isLeftPanelVisible = true
     @State private var isRightPanelVisible = true
     @State private var isFileBrowserExpanded = true
+    @State private var isGeneratingReport = false   // 🆕 REPORT
 
     var body: some View {
         HSplitView {
@@ -175,6 +178,42 @@ struct ContentView: View {
                     Label("Parameters", systemImage: "slider.horizontal.3")
                 }
 
+                // 🆕 Инструмент измерения расстояний
+                DisclosureGroup {
+                    VStack(spacing: 10) {
+                        Toggle("Режим измерения", isOn: $appState.isMeasuringMode)
+                            .toggleStyle(.switch)
+                        
+                        if appState.isMeasuringMode {
+                            Text("Кликните по 2-м точкам на модели")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            Picker("", selection: $appState.measureSnapAxis) {
+                                Text("Произвольно").tag("None")
+                                Text("По оси X").tag("X")
+                                Text("По оси Y").tag("Y")
+                                Text("По оси Z").tag("Z")
+                            }
+                            .pickerStyle(.segmented)
+                            
+                            if !appState.measureDistance.isEmpty {
+                                Text(appState.measureDistance)
+                                    .font(.headline)
+                                    .foregroundColor(.blue)
+                            }
+                            
+                            Button("Сбросить замер") {
+                                appState.clearMeasurements()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.vertical, 5)
+                } label: {
+                    Label("Измерение", systemImage: "ruler")
+                }
+
                 DisclosureGroup {
                     manageModelsContent
                 } label: {
@@ -259,6 +298,13 @@ struct ContentView: View {
                                 )
                             }
                             .buttonStyle(.borderedProminent).controlSize(.small)
+                            
+                            // 🆕 Кнопка поворота на 180 градусов
+                            Button("Rotate 180°") {
+                                appState.rotateModel180(modelID: selectedModel.id)
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            
                             Button("Reset to 0") {
                                 appState.newModelPositionX = 0
                                 appState.newModelPositionY = 0
@@ -269,6 +315,8 @@ struct ContentView: View {
                                     y: 0,
                                     z: 0
                                 )
+                                // 🆕 Сбрасываем поворот вместе с позицией
+                                appState.resetModelRotation(modelID: selectedModel.id)
                             }
                             .buttonStyle(.bordered).controlSize(.small)
                         }
@@ -348,7 +396,7 @@ struct ContentView: View {
             Divider()
             Text("1. Размеры модели:").fontWeight(.semibold)
             Text("- Высота (Z): \(String(format: "%.2f", stats.height)) мм")
-            Text("- Длина (Y): \(String(format: "%.2f", stats.length)) мм")
+            Text("- Длина (Y): \(String(format: "%.2f", stats.length)) мм / \(String(format: "%.2f", stats.lengthTop)) мм")
             Text("- Ширина (X): \(String(format: "%.2f", stats.width)) мм")
             Text("2. Количество точек с экструзией: \(stats.extrusionPoints)")
                 .fontWeight(.semibold)
@@ -358,6 +406,19 @@ struct ContentView: View {
             Text(
                 "4. Скорость печати: \(String(format: "%.1f", stats.maxSpeedMmPerMin / 60.0)) мм/с"
             )
+            Text("   - Мин. скорость слоя: \(String(format: "%.1f", stats.minLayerSpeedMmPerMin / 60.0)) мм/с")
+                .font(.caption).foregroundColor(.secondary)
+            Text("   - Ср. скорость слоя: \(String(format: "%.1f", stats.avgLayerSpeedMmPerMin / 60.0)) мм/с")
+                .font(.caption).foregroundColor(.secondary)
+            Text("   - Макс. скорость слоя: \(String(format: "%.1f", stats.maxLayerSpeedMmPerMin / 60.0)) мм/с")
+                .font(.caption).foregroundColor(.secondary)
+            // 🆕 Время печати слоев
+            Text("   - Мин. время слоя: \(String(format: "%.2f", stats.minLayerTimeSec)) сек")
+                .font(.caption).foregroundColor(.secondary)
+            Text("   - Ср. время слоя: \(String(format: "%.2f", stats.avgLayerTimeSec)) сек")
+                .font(.caption).foregroundColor(.secondary)
+            Text("   - Макс. время слоя: \(String(format: "%.2f", stats.maxLayerTimeSec)) сек")
+                .font(.caption).foregroundColor(.secondary)
             Text(
                 "5. Расчетное время печати: \(String(format: "%.1f", stats.estimatedPrintTimeMin/60)) ч."
             )
@@ -365,12 +426,24 @@ struct ContentView: View {
             Divider()
             Text("7. Количество экструзии (код E):").fontWeight(.semibold)
             Text("- Всего: \(stats.totalExtrusion.formattedWithSpaces) мм")
-            Text(
+/*            Text(
                 "- На точку: мин \(String(format: "%.4f", stats.minEPerPoint)) мм (\(stats.minEPointCoords))"
             )
             Text(
                 "- На точку: макс \(String(format: "%.4f", stats.maxEPerPoint)) мм (\(stats.maxEPointCoords))"
-            )
+            ) */
+            Divider()
+            Text("=== ТЕМПЕРАТУРЫ ===").font(.headline)
+            if appState.parsedTemperatures.isEmpty {
+                Text("Температуры не найдены в G-code файле")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(Array(appState.parsedTemperatures.keys.sorted()), id: \.self) { key in
+                    if let temp = appState.parsedTemperatures[key] {
+                        Text("\(key): \(String(format: "%.1f", temp))°C")
+                    }
+                }
+            }
             Divider()
             Text("=== OPTIMIZATION ===").font(.headline)
             Text("Original ext pts: \(stats.originalExtrusionPoints)")
@@ -404,26 +477,42 @@ struct ContentView: View {
 
     private func copyAnalyticsToClipboard() {
         guard let stats = appState.stats else { return }
+        var tempText = "Температуры не найдены\n"
+        if !appState.parsedTemperatures.isEmpty {
+            tempText = ""
+            for key in appState.parsedTemperatures.keys.sorted() {
+                if let temp = appState.parsedTemperatures[key] {
+                    tempText += "\(key): \(String(format: "%.1f", temp))°C\n"
+                }
+            }
+        }
         let text = """
             === АНАЛИЗ GCODE ФАЙЛА ===
             \(stats.fileName), \(formatBytes(stats.fileSize))
 
             1. Размеры модели:
             - Высота (Z): \(String(format: "%.2f", stats.height)) мм
-            - Длина (Y): \(String(format: "%.2f", stats.length)) мм
+            - Длина (Y): \(String(format: "%.2f", stats.length)) мм / \(String(format: "%.2f", stats.lengthTop)) мм")
             - Ширина (X): \(String(format: "%.2f", stats.width)) мм
 
             2. Количество точек с экструзией: \(stats.extrusionPoints)
             3. Длина пути печати: \(stats.extrusionPathLength.formattedWithSpaces) мм
             4. Скорость печати: \(String(format: "%.1f", stats.maxSpeedMmPerMin / 60.0)) мм/с
+            - Мин. скорость слоя: \(String(format: "%.1f", stats.minLayerSpeedMmPerMin / 60.0)) мм/с
+            - Ср. скорость слоя: \(String(format: "%.1f", stats.avgLayerSpeedMmPerMin / 60.0)) мм/с
+            - Макс. скорость слоя: \(String(format: "%.1f", stats.maxLayerSpeedMmPerMin / 60.0))
+            - Мин. время слоя: \(String(format: "%.2f", stats.minLayerTimeSec)) сек
+            - Ср. время слоя: \(String(format: "%.2f", stats.avgLayerTimeSec)) сек
+            - Макс. время слоя: \(String(format: "%.2f", stats.maxLayerTimeSec)) сек
             5. Расчетное время печати: \(String(format: "%.1f", stats.estimatedPrintTimeMin/60)) ч.
             6. Количество слоев: \(stats.numLayers)
 
             7. Количество экструзии (код E):
             - Всего: \(stats.totalExtrusion.formattedWithSpaces) мм
-            - На точку: мин \(String(format: "%.4f", stats.minEPerPoint)) мм (\(stats.minEPointCoords))
-            - На точку: макс \(String(format: "%.4f", stats.maxEPerPoint)) мм (\(stats.maxEPointCoords))
-
+            
+            === ТЕМПЕРАТУРЫ ===
+            \(tempText)
+            
             === OPTIMIZATION ===
             Original ext pts: \(stats.originalExtrusionPoints)
             Optimized ext pts: \(stats.optimizedExtrusionPoints)
@@ -537,7 +626,24 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
             .disabled(appState.rawPoints.isEmpty)
+            
+            Divider()
+
+            Button(action: { generateReport() }) {
+                HStack {
+                    Image(systemName: "doc.text.fill")
+                    Text(isGeneratingReport ? "Генерация..." : "📄 Сформировать отчет")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(appState.loadedModels.isEmpty || appState.isRecording || isGeneratingReport)
+
+            if isGeneratingReport {
+                ProgressView("Формирование отчета...")
+                    .controlSize(.small)
+            }
         }
+        
     }
 
     private var materialsContent: some View {
@@ -598,6 +704,248 @@ struct ContentView: View {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - 🆕 REPORT — Генерация отчёта DOCX по ВСЕМ файлам каталога
+    // ═══════════════════════════════════════════════════════════════
+
+    private func generateReport() {
+        // Проверяем, выбрана ли директория и есть ли в ней файлы
+        guard let dir = appState.currentDirectory else {
+            appState.log("❌ Сначала выберите каталог с G-code файлами")
+            return
+        }
+        let filesToProcess = appState.fileItems
+        guard !filesToProcess.isEmpty else {
+            appState.log("❌ В выбранном каталоге нет G-code файлов")
+            return
+        }
+
+        let savePanel = NSSavePanel()
+        if let docxUT = UTType(filenameExtension: "docx") { savePanel.allowedContentTypes = [docxUT] }
+        savePanel.nameFieldStringValue = "Задание_на_печать_\(formatDateForFilename(Date())).docx"
+
+        guard savePanel.runModal() == .OK, let saveURL = savePanel.url else { return }
+        
+        isGeneratingReport = true
+        appState.log("📝 Начало формирования отчёта по \(filesToProcess.count) файлам...")
+
+        // 1. ПОЛНОСТЬЮ СОХРАНЯЕМ ОРИГИНАЛЬНОЕ СОСТОЯНИЕ СЦЕНЫ
+        let originalLoadedModels = appState.loadedModels
+        let originalRawPoints = appState.rawPoints
+        let originalSelectedID = appState.selectedModelID
+        let originalShowAxis = appState.showAxis
+
+        var reportItems: [ReportItem] = []
+        var totalArea: Double = 0.0
+        let totalModels = filesToProcess.count
+
+        // 2. ЦИКЛ ПО ВСЕМ ФАЙЛАМ В КАТАЛОГЕ
+        for (index, fileItem) in filesToProcess.enumerated() {
+            appState.log("📝 Обработка \(index + 1)/\(totalModels): \(fileItem.name)")
+            
+            // Парсим файл (быстро, в текущем потоке, так как нам нужны данные для геометрии)
+            let parseResult = GCodeParser.parse(file: fileItem.url) { _ in }
+            let points = parseResult.points
+            
+            guard !points.isEmpty else {
+                appState.log("⚠️ Пропуск \(fileItem.name): нет точек экструзии")
+                continue
+            }
+
+            // Создаем ВРЕМЕННУЮ модель
+            var tempModel = LoadedModel(
+                name: fileItem.name,
+                fileURL: fileItem.url,
+                points: points,
+                position: simd_float3(0, 0, 0)
+            )
+            
+            // Строим геометрию для временной модели (используя текущие настройки диаметра и угла)
+            appState.processGeometryForModel(&tempModel)
+
+            // Подменяем сцену временной моделью
+            appState.loadedModels = [tempModel]
+            appState.rawPoints = points
+            appState.selectedModelID = tempModel.id
+            appState.renderTrigger += 1
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3)) // Даём SceneKit отрисовать
+
+            // ВЫКЛЮЧАЕМ КООРДИНАТНУЮ СЕТКУ
+            appState.showAxis = false
+            appState.renderTrigger += 1
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+
+            // Камера ISO-1
+            appState.cameraAction = .iso1
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1.0))
+
+            // Захват скриншота
+            let pngData = captureHighResScreenshot(width: 600, height: 800)
+
+            // 3. СБОР ДАННЫХ ДЛЯ ОТЧЕТА
+            let w = tempModel.modelSize.x
+            let h = tempModel.modelSize.y
+            let l = abs(tempModel.modelSize.z)
+            totalArea += Double(w * l) / 1_000_000.0 // Площадь в м2
+
+            let (maxSpeed, _, _) = computeModelStats(model: tempModel)
+            let numLayers = tempModel.processedLayers.count
+
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "dd-MM-yyyy"
+            let dateFormatted = dateFormatter.string(from: fileItem.date)
+
+            let (imgW, imgH) = ReportGenerator.pngDimensions(from: pngData ?? Data())
+            let productCode = extractProductCode(from: fileItem.name)
+
+            reportItems.append(ReportItem(
+                number: reportItems.count + 1, // Нумерация только тех, что реально вошли в отчет
+                productCode: productCode,
+                fileName: fileItem.name,
+                fileDate: dateFormatted,
+                width: w, length: l, height: h,
+                numLayers: numLayers,
+                printSpeed: maxSpeed / 60.0,
+                imageData: pngData ?? Data(),
+                imageWidth: imgW, imageHeight: imgH
+            ))
+        }
+
+        // 4. ПОЛНОЕ ВОССТАНОВЛЕНИЕ СЦЕНЫ ПОЛЬЗОВАТЕЛЯ
+        appState.loadedModels = originalLoadedModels
+        appState.rawPoints = originalRawPoints
+        appState.selectedModelID = originalSelectedID
+        appState.showAxis = originalShowAxis
+        appState.renderTrigger += 1
+
+        // 5. ФОРМИРОВАНИЕ СВОДКИ (Титульный лист)
+        let cal = DateFormatter()
+        cal.dateFormat = "dd.MM.yyyy"
+        let today = cal.string(from: Date())
+        let deadline = Calendar.current.date(byAdding: .day, value: 15, to: Date()) ?? Date()
+        let deadlineS = cal.string(from: deadline)
+        
+        // Берем имя папки как "Номер задания"
+        let dirName = dir.lastPathComponent
+
+        let summary = ReportSummary(
+            assignmentNumber: dirName,
+            date: today,
+            deadlineDate: deadlineS,
+            totalItems: reportItems.count, // Считаем только успешно обработанные
+            totalAreaSqm: totalArea,
+            location: "Не указан",
+            executor: "Производство",
+            customer: "СБЕР, СБД",
+            contactPerson: "Дроздов К., Орлов Г.",
+            directorName: "К.В. Дроздов"
+        )
+
+        // 6. ГЕНЕРАЦИЯ И СОХРАНЕНИЕ DOCX В ФОНОВОМ ПОТОКЕ
+        DispatchQueue.global(qos: .userInitiated).async {
+            let docxData = ReportGenerator.generate(items: reportItems, summary: summary)
+            
+            DispatchQueue.main.async {
+                do {
+                    try docxData.write(to: saveURL)
+                    self.appState.log("✅ Отчёт сохранён: \(saveURL.path)")
+                    NSWorkspace.shared.open(saveURL)
+                } catch {
+                    self.appState.log("❌ Ошибка сохранения: \(error)")
+                }
+                self.isGeneratingReport = false
+            }
+        }
+    }
+
+    // 🆕 Парсинг "Кода изделия" из имени (например: 93-93_0.1_Ws_OL_8.gcode -> P0.1_93-93)
+    private func extractProductCode(from filename: String) -> String {
+        // Убираем расширение
+        let name = filename.replacingOccurrences(of: ".gcode", with: "").replacingOccurrences(of: ".nc", with: "")
+        // Ищем паттерн "размеры_толщина_..."
+        let parts = name.split(separator: "_")
+        if parts.count >= 2, let sizes = parts.first, let thickness = parts.dropFirst().first {
+            return "P\(thickness)_\(sizes)"
+        }
+        return "P0.1_\(name)" // Фолбэк
+    }
+
+    private func captureHighResScreenshot(width: Int, height: Int) -> Data? {
+        // Берем текущую вьюшку, которую вы видите на экране
+        guard let sceneView = appState.sceneView ?? getSceneView() else { return nil }
+
+        // Вызываем встроенный метод снимка экрана прямо у отображаемой вьюшки
+        // Он автоматически использует текущую камеру, освещение и геометрию
+        let nsImage = sceneView.snapshot()
+        
+        // Поскольку мы берем "как есть", указанные width/height здесь не меняют разрешение снимка,
+        // оно будет равно физическому размеру окна (с учетом Retina).
+        // Если вам нужно принудительно изменить размер полученной картинки, можно сделать так:
+        // let targetSize = NSSize(width: width, height: height)
+        // let finalImage = resizeImage(image: nsImage, to: targetSize)
+
+        guard let tiffData = nsImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData)
+        else { return nil }
+
+        return bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:])
+    }
+    
+    private func captureHighResScreenshot0(width: Int, height: Int) -> Data? {
+        guard let sceneView = appState.sceneView ?? getSceneView(),
+              let scene = sceneView.scene,
+              let device = MTLCreateSystemDefaultDevice()
+        else { return nil }
+
+        let renderer = SCNRenderer(device: device, options: nil)
+        renderer.scene = scene
+        renderer.pointOfView = sceneView.pointOfView
+        renderer.autoenablesDefaultLighting = sceneView.autoenablesDefaultLighting
+
+        let imageSize = CGSize(width: width, height: height)
+        let nsImage = renderer.snapshot(atTime: 0, with: imageSize, antialiasingMode: .multisampling4X)
+
+        guard let tiffData = nsImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData)
+        else { return nil }
+
+        return bitmap.representation(using: NSBitmapImageRep.FileType.png, properties: [:])
+    }
+
+    private func computeModelStats(model: LoadedModel) -> (maxSpeed: Float, printTimeMin: Float, extPoints: Int) {
+        var maxF: Float = 0
+        var printTime: Float = 0
+        var extCount = 0
+        var lastPoint: GCodePoint?
+
+        for point in model.points {
+            if point.isExtrusion {
+                extCount += 1
+                if point.feedRate > maxF { maxF = point.feedRate }
+            }
+            if let prev = lastPoint {
+                let dx = point.x - prev.x, dy = point.y - prev.y, dz = point.z - prev.z
+                let distSq = dx * dx + dy * dy + dz * dz
+                if distSq > 0.000001 {
+                    let dist = sqrtf(distSq)
+                    if point.isExtrusion {
+                        let speed = point.feedRate > 0 ? point.feedRate : 1000.0
+                        printTime += dist / speed
+                    }
+                }
+            }
+            lastPoint = point
+        }
+        return (maxF, printTime, extCount)
+    }
+
+    // MARK: - 🆕 REPORT: Форматирование даты для имени файла
+
+    private func formatDateForFilename(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "dd-MM-yyyy"
+        return f.string(from: date)
+    }
     // MARK: - Логика (запись видео, фото и т.д.)
 
     private func selectDirectory() {

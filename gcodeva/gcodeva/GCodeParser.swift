@@ -1,14 +1,18 @@
 import Foundation
 import simd
+import SwiftUI
+import UniformTypeIdentifiers
 
 class GCodeParser {
-    
-    static func parse(file: URL, progress: @escaping (Double) -> Void) -> [GCodePoint] {
+    @EnvironmentObject var appState: AppState
+
+    // Изменяем возвращаемый тип на кортеж (points, temperatures)
+    static func parse(file: URL, progress: @escaping (Double) -> Void) -> (points: [GCodePoint], temperatures: [String: Float]) {
         let t0 = CFAbsoluteTimeGetCurrent()
         
         // 1. ЗАМЕР: чтение файла
         let readStart = CFAbsoluteTimeGetCurrent()
-        guard let data = try? Data(contentsOf: file, options: .alwaysMapped) else { return [] }
+        guard let data = try? Data(contentsOf: file, options: .alwaysMapped) else { return ([], [:]) }
         let readTime = (CFAbsoluteTimeGetCurrent() - readStart) * 1000
         print("📊 [1] File read: \(String(format: "%.2f", readTime)) ms")
         
@@ -28,7 +32,8 @@ class GCodeParser {
         let parseStart = CFAbsoluteTimeGetCurrent()
         var lineCount = 0
         var gcodeLines = 0
-        
+        var temperatures: [String: Float] = [:]
+
         data.withUnsafeBytes { rawBuffer in
             let base = rawBuffer.baseAddress!.assumingMemoryBound(to: UInt8.self)
             var ptr = base
@@ -42,6 +47,9 @@ class GCodeParser {
                 if byte == 10 || byte == 13 {
                     if ptr > lineStart {
                         lineCount += 1
+                        // Проверяем на SET_HEATER_TEMPERATURE
+                        parseTemperatureLine(start: lineStart, end: ptr, temperatures: &temperatures)
+                        
                         if processLineFast(start: lineStart, end: ptr, state: &state, points: &points) {
                             gcodeLines += 1
                         }
@@ -66,17 +74,19 @@ class GCodeParser {
             
             if ptr > lineStart {
                 lineCount += 1
+                if (lineCount<100) {parseTemperatureLine(start: lineStart, end: ptr, temperatures: &temperatures)}
                 if processLineFast(start: lineStart, end: ptr, state: &state, points: &points) {
                     gcodeLines += 1
                 }
             }
         }
-        
+
         let parseTime = (CFAbsoluteTimeGetCurrent() - parseStart) * 1000
         print("📊 [3] Parsing: \(String(format: "%.2f", parseTime)) ms")
         print("📊   - Total lines: \(lineCount)")
         print("📊   - G-code lines: \(gcodeLines)")
         print("📊   - Points created: \(points.count)")
+        print("📊   - Temperatures: \(temperatures)")
         
         // 4. ЗАМЕР: если нужно - постобработка
         let postStart = CFAbsoluteTimeGetCurrent()
@@ -88,13 +98,114 @@ class GCodeParser {
         print("📊 TOTAL: \(String(format: "%.2f", totalTime)) ms")
         print("📊 Points per second: \(String(format: "%.0f", Double(points.count) / (totalTime / 1000)))")
         
-        return points
+        return (points, temperatures)
     }
     
     private struct ParserState {
         var x: Float = 0, y: Float = 0, z: Float = 0, e: Float = 0, f: Float = 0
         var layer: Int = 0
         var lastZ: Float = 0
+    }
+    
+    // Парсинг строки SET_HEATER_TEMPERATURE
+    @inline(__always)
+    private static func parseTemperatureLine(start: UnsafePointer<UInt8>, end: UnsafePointer<UInt8>,
+                                             temperatures: inout [String: Float]) {
+        var p = start
+        // Пропускаем пробелы
+        while p < end && p.pointee == 32 { p += 1 }
+        guard p + 3 < end else { return }
+        
+        // Проверяем "SET"
+        guard p.pointee == 83 else { return } // 'S'
+        p += 1
+        guard p.pointee == 69 else { return } // 'E'
+        p += 1
+        guard p.pointee == 84 else { return } // 'T'
+        p += 1
+        
+        // Пропускаем пробелы
+        while p < end && p.pointee == 32 { p += 1 }
+        
+        // Проверяем "_HEATER_TEMPERATURE"
+        let expected = "_HEATER_TEMPERATURE"
+        var expectedPtr = expected.utf8.makeIterator()
+        for _ in 0..<expected.count {
+            guard p < end else { return }
+            let expectedChar = expectedPtr.next()!
+            if p.pointee != expectedChar { return }
+            p += 1
+        }
+        
+        // Парсим параметры
+        var heaterName: String?
+        var targetTemp: Float?
+        
+        while p < end {
+            // Пропускаем пробелы
+            while p < end && (p.pointee == 32 || p.pointee == 9) { p += 1 }
+            guard p < end else { break }
+            
+            // Проверяем параметры
+            if p.pointee == 104 { // 'h' - heater
+                p += 1
+                guard p < end && p.pointee == 101 else { break } // 'e'
+                p += 1
+                guard p < end && p.pointee == 97 else { break } // 'a'
+                p += 1
+                guard p < end && p.pointee == 116 else { break } // 't'
+                p += 1
+                guard p < end && p.pointee == 101 else { break } // 'e'
+                p += 1
+                guard p < end && p.pointee == 114 else { break } // 'r'
+                p += 1
+                guard p < end && p.pointee == 61 else { break } // '='
+                p += 1
+                
+                // Читаем имя нагревателя в кавычках
+                guard p < end && p.pointee == 34 else { break } // '"'
+                p += 1
+                let nameStart = p
+                var nameLength = 0
+                while p < end && p.pointee != 34 {
+                    p += 1
+                    nameLength += 1
+                }
+                guard p < end && p.pointee == 34 else { break } // '"'
+                if nameLength > 0 {
+                    let nameBytes = UnsafeBufferPointer(start: nameStart, count: nameLength)
+                    heaterName = String(bytes: nameBytes, encoding: .utf8)
+                }
+                p += 1
+                
+            } else if p.pointee == 116 { // 't' - target
+                p += 1
+                guard p < end && p.pointee == 97 else { break } // 'a'
+                p += 1
+                guard p < end && p.pointee == 114 else { break } // 'r'
+                p += 1
+                guard p < end && p.pointee == 103 else { break } // 'g'
+                p += 1
+                guard p < end && p.pointee == 101 else { break } // 'e'
+                p += 1
+                guard p < end && p.pointee == 116 else { break } // 't'
+                p += 1
+                guard p < end && p.pointee == 61 else { break } // '='
+                p += 1
+                
+                let (val, next) = parseFloatFast(start: p, end: end)
+                if let v = val {
+                    targetTemp = v
+                }
+                p = next
+            } else {
+                p += 1
+            }
+        }
+        
+        if let name = heaterName, let temp = targetTemp {
+            temperatures[name] = temp
+        }
     }
     
     @inline(__always)
