@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Инструкция пользователя GCodeVA</title>
+        <style>
+            :root {
+                --bg: #ffffff;
+                --text: #1a1a2e;
+                --text-light: #555570;
+                --accent: #7c6af7;
+                --accent-light: #f0eeff;
+                --border: #e2e2ee;
+                --code-bg: #f4f4f8;
+            }
+
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                background-color: var(--bg);
+                color: var(--text);
+                line-height: 1.7;
+                padding: 20px;
+            }
+
+            .manual-container {
+                max-width: 900px;
+                margin: 0 auto;
+                background: #fff;
+                padding: 40px 50px;
+                border-radius: 12px;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+            }
+
+            h1 {
+                font-size: 2.2em;
+                color: var(--text);
+                margin-bottom: 10px;
+                border-bottom: 3px solid var(--accent);
+                padding-bottom: 15px;
+                display: inline-block;
+            }
+
+            .intro {
+                font-size: 1.1em;
+                color: var(--text-light);
+                margin-bottom: 40px;
+            }
+
+            h2 {
+                font-size: 1.5em;
+                color: var(--text);
+                margin-top: 40px;
+                margin-bottom: 15px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            h2::before {
+                content: "";
+                display: block;
+                width: 6px;
+                height: 24px;
+                background: var(--accent);
+                border-radius: 3px;
+            }
+
+            h3 {
+                font-size: 1.2em;
+                color: var(--accent);
+                margin-top: 25px;
+                margin-bottom: 10px;
+            }
+
+            p {
+                margin-bottom: 15px;
+            }
+
+            ul,
+            ol {
+                margin-left: 25px;
+                margin-bottom: 15px;
+            }
+
+            li {
+                margin-bottom: 8px;
+            }
+
+            .kbd {
+                background: var(--code-bg);
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-family: monospace;
+                font-size: 0.9em;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            }
+
+            .btn-ui {
+                background: var(--accent-light);
+                color: var(--accent);
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 0.9em;
+                font-weight: 600;
+                display: inline-block;
+            }
+
+            .screenshot-placeholder {
+                width: 100%;
+                background: var(--code-bg);
+                border: 2px dashed var(--border);
+                border-radius: 8px;
+                padding: 40px 20px;
+                text-align: center;
+                color: var(--text-light);
+                font-size: 0.95em;
+                margin: 20px 0;
+                position: relative;
+            }
+
+            .screenshot-placeholder img {
+                max-width: 100%;
+                border-radius: 8px;
+                border: 1px solid var(--border);
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            }
+
+            .screenshot-placeholder .no-img {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .tip-box {
+                background: var(--accent-light);
+                border-left: 4px solid var(--accent);
+                padding: 15px 20px;
+                border-radius: 0 8px 8px 0;
+                margin: 20px 0;
+                font-size: 0.95em;
+            }
+
+            .tip-box strong {
+                color: var(--accent);
+            }
+
+            @media (max-width: 768px) {
+                .manual-container {
+                    padding: 20px;
+                }
+                h1 {
+                    font-size: 1.8em;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="manual-container">
+            <h1>📖 Инструкция пользователя GCodeVA</h1>
+            <p class="intro">
+                <strong>GCodeVA</strong> — это визуализатор G-кода для
+                3D-печати, который позволяет загружать, просматривать,
+                анализировать и экспортировать траектории печати в интерактивном
+                3D-пространстве прямо в браузере.
+            </p>
+
+            <!-- Скриншот 1 -->
+            <div class="screenshot-placeholder">
+                <!-- ЗАМЕНИТЕ src на путь к вашему скриншоту -->
+                <!-- <img src="images/01-overview.png" alt="Общий вид приложения"> -->
+                <div class="no-img">
+                    📷 [ВСТАВИТЬ СКРИНШОТ: Общий вид приложения с загруженной
+                    моделью]
+                </div>
+            </div>
+
+            <h2>1. Загрузка G-кода</h2>
+            <p>Добавить файлы в приложение можно двумя способами:</p>
+            <ul>
+                <li>
+                    <strong>Drag & Drop:</strong> Просто перетащите файлы с
+                    расширением <span class="kbd">.gcode</span>,
+                    <span class="kbd">.nc</span> или
+                    <span class="kbd">.ngc</span> в центральную область экрана.
+                    Файл автоматически добавится в список и начнет строиться.
+                </li>
+                <li>
+                    <strong>Через кнопку:</strong> В левой панели, в секции
+                    <strong>「📁 Files」</strong>, нажмите кнопку
+                    <span class="btn-ui">Open</span>. Выберите файлы в системном
+                    диалоге.
+                </li>
+            </ul>
+
+            <!-- Скриншот 2 -->
+            <div class="screenshot-placeholder">
+                <!-- <img src="images/02-files.png" alt="Секция Files"> -->
+                <div class="no-img">
+                    📷 [ВСТАВИТЬ СКРИНШОТ: Секция Files с открытым списком
+                    файлов и кнопкой Open]
+                </div>
+            </div>
+
+            <p>
+                В блоке файлов вы можете сортировать список по Имени, Размеру
+                или Дате, нажимая на соответствующие вкладки. Выберите нужный
+                файл кликом по нему в списке.
+            </p>
+
+            <h2>2. Построение и добавление моделей</h2>
+            <ul>
+                <li>
+                    <span class="btn-ui">Load Model (Replace)</span> — Заменяет
+                    текущую модель в 3D-сцене на выбранную в списке. Старая
+                    модель удаляется.
+                </li>
+                <li>
+                    <span class="btn-ui">➕ Add Selected Model</span> —
+                    Добавляет выбранную модель в сцену, не удаляя текущие. Новая
+                    модель автоматически сдвигается по оси X, чтобы не
+                    пересекаться с уже загруженными.
+                </li>
+            </ul>
+
+            <h2>3. Управление камерой и видом</h2>
+            <p>
+                В секции <strong>「🎥 Camera Views」</strong> находятся
+                предустановленные ракурсы:
+            </p>
+            <ul>
+                <li>
+                    <strong>Top / Bottom / Front / Back / Left / Right</strong>
+                    — стандартные ортогональные виды.
+                </li>
+                <li>
+                    <strong>ISO 1–4</strong> — изометрические виды с разных
+                    углов.
+                </li>
+                <li>
+                    <span class="btn-ui">↻ Rotate 360°</span> — запускает
+                    плавный автоматический поворот модели. Нажмите еще раз,
+                    чтобы остановить.
+                </li>
+            </ul>
+
+            <div class="tip-box">
+                <strong>💡 Ручное управление в 3D-окне:</strong>
+                Вращение — левая кнопка мыши (ЛКМ), масштабирование — колесо
+                мыши, перемещение — правая кнопка мыши (ПКМ).
+            </div>
+
+            <p>
+                Кнопка <span class="btn-ui">Grid / Axis</span> в верхнем тулбаре
+                скрывает и показывает сетку с осями координат (X — красная, Y —
+                зеленая, Z — синяя).
+            </p>
+
+            <h2>4. Настройка параметров (Секция ⚙️ Parameters)</h2>
+            <p>Здесь настраивается визуальное представление модели:</p>
+            <ul>
+                <li>
+                    <strong>Tube Ø (mm):</strong> Диаметр трубки, из которой
+                    строится траектория экструзии. После изменения ползунка
+                    нажмите <span class="btn-ui">Apply Diameter</span>.
+                </li>
+                <li>
+                    <strong>Color:</strong> Выбор цвета пластика. Нажмите
+                    <span class="btn-ui">Apply Color</span>, чтобы обновить вид.
+                </li>
+                <li>
+                    <strong>Collinear °:</strong> Угол упрощения (оптимизации)
+                    траектории. Чем выше значение, тем больше точек удаляется.
+                    Это ускоряет рендер, но снижает детализацию на кривых.
+                    Нажмите <span class="btn-ui">Apply Collinear</span>.
+                </li>
+            </ul>
+
+            <!-- Скриншот 3 -->
+            <div class="screenshot-placeholder">
+                <!-- <img src="images/03-params.png" alt="Секция Parameters"> -->
+                <div class="no-img">
+                    📷 [ВСТАВИТЬ СКРИНШОТ: Секция Parameters с ползунками и
+                    кнопками применения]
+                </div>
+            </div>
+
+            <h2>5. Материалы (Секция 💠 Materials)</h2>
+            <p>Переключайте визуальный шейдер модели для лучшего восприятия:</p>
+            <ul>
+                <li><strong>Matte</strong> — матовый пластик (без бликов).</li>
+                <li>
+                    <strong>Plastic</strong> — глянцевый пластик (с бликами).
+                </li>
+                <li>
+                    <strong>Steel</strong> — металлический материал
+                    (отражающий).
+                </li>
+                <li>
+                    <strong>Glass</strong> — полупрозрачный стеклянный вид
+                    (удобно для просмотра внутренней структуры и ходов без
+                    экструзии).
+                </li>
+            </ul>
+
+            <h2>6. Работа с несколькими моделями (Секция 📁 Manage Models)</h2>
+            <p>
+                Если вы добавили несколько моделей через кнопку
+                <span class="btn-ui">Add</span>, здесь появится список:
+            </p>
+            <ul>
+                <li>
+                    <strong>Выбор модели:</strong> Кликните по названию модели в
+                    списке, чтобы увидеть её габариты и позицию.
+                </li>
+                <li>
+                    <strong>👁 / 🚫 Видимость:</strong> Скрывает или показывает
+                    выбранную модель в 3D-сцене.
+                </li>
+                <li>
+                    <strong>Position (mm):</strong> Вы можете вручную ввести
+                    координаты X, Y, Z для сдвига модели в пространстве и нажать
+                    <span class="btn-ui">Update</span>, либо сбросить позицию
+                    кнопкой <span class="btn-ui">Reset</span>.
+                </li>
+                <li>
+                    <span class="btn-ui">🗑 Remove</span> — Удаляет модель из
+                    сцены.
+                </li>
+            </ul>
+
+            <h2>7. Вкладка Analytics (Правая панель)</h2>
+            <p>
+                Включает статистику по первой загруженной модели (нажмите кнопку
+                <span class="btn-ui">📊 Calculate Analytics</span> в секции
+                Export, если данные не появились автоматически):
+            </p>
+            <ul>
+                <li>
+                    <strong>Dimensions:</strong> Габариты модели по осям X, Y, Z
+                    в миллиметрах.
+                </li>
+                <li>
+                    <strong>Print Info:</strong> Количество точек экструзии,
+                    длина пути печати, максимальная скорость (мм/с), расчетное
+                    время печати, количество слоев и общий объем
+                    экструдированного пластика.
+                </li>
+                <li>
+                    <strong>Optimization:</strong> Сравнение количества точек до
+                    и после оптимизации (удаления коллинеарных точек), а также
+                    процент сжатия.
+                </li>
+            </ul>
+
+            <!-- Скриншот 4 -->
+            <div class="screenshot-placeholder">
+                <!-- <img src="images/04-analytics.png" alt="Вкладка Analytics"> -->
+                <div class="no-img">
+                    📷 [ВСТАВИТЬ СКРИНШОТ: Вкладка Analytics с заполненными
+                    данными]
+                </div>
+            </div>
+
+            <h2>8. Вкладка Log (Правая панель)</h2>
+            <p>
+                Текстовый журнал всех действий приложения. Здесь отображаются:
+            </p>
+            <ul>
+                <li>Время загрузки и парсинга файлов.</li>
+                <li>Примененные параметры (цвет, диаметр, материал).</li>
+                <li>Ошибки (если файл не удалось прочитать).</li>
+            </ul>
+
+            <h2>9. Экспорт (Секция 💾 Export)</h2>
+            <ul>
+                <li>
+                    <span class="btn-ui">📊 Calculate Analytics</span> —
+                    Запускает расчет статистики для правой панели.
+                </li>
+                <li>
+                    <span class="btn-ui">🎥 Record 360° Video (WebM)</span> —
+                    Записывает 3-секундное видео вращения модели на 360
+                    градусов. Можно задать разрешение (W/H).
+                </li>
+                <li>
+                    <span class="btn-ui">📸 Save 10 View Photos</span> — Делает
+                    10 снимков модели с разных ракурсов (Top, Bottom, Front,
+                    Back, Left, Right, ISO 1-4) и скачивает их как PNG-файлы.
+                </li>
+            </ul>
+
+            <h2>10. Интерфейс: Сворачивание панелей</h2>
+            <p>
+                В заголовке левой панели и в правой панели есть кнопки со
+                стрелками <span class="btn-ui">‹</span> и
+                <span class="btn-ui">›</span>. Они сворачивают панели, чтобы
+                освободить место для 3D-вида. Когда панель свернута, на краю
+                экрана появляется кнопка для её возврата.
+            </p>
+
+            <!-- Скриншот 5 -->
+            <div class="screenshot-placeholder">
+                <!-- <img src="images/05-collapse.png" alt="Сворачивание панелей"> -->
+                <div class="no-img">
+                    📷 [ВСТАВИТЬ СКРИНШОТ: Свернутая левая панель и кнопка
+                    восстановления на краю экрана]
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

@@ -1,6 +1,25 @@
+"""
+Чтение: /Users/drozdovkv/Downloads/МАНЖЕРОК/all_10_seg.las
+Загружено 25,350,617 точек
+Децимация: 25,350,617 -> ~15,000,000...
+После децимации: 8,436,174 точек
+Нормали для 8,436,174 точек...
+  Нормали: 421,808/8,436,174 (5%)
+  Нормали: 3,374,464/8,436,174 (40%)
+  Нормали: 6,327,120/8,436,174 (75%)
+Нормали готовы
+Построение меша...
+Треугольников: 16,462,914
+Сохранение: /Users/drozdovkv/Downloads/МАНЖЕРОК/all_10_seg.glb
+GLB: 8,436,174 вершин, 16,462,914 треуг., 478.0 MB
+GLB создан!
+
+"""
+
+
 import numpy as np
 import laspy
-from scipy.spatial import Delaunay, KDTree
+from scipy.spatial import Delaunay, cKDTree
 import os
 import struct
 import json
@@ -10,61 +29,46 @@ import threading
 import subprocess
 import platform
 import warnings
+import time
+import hashlib
 
 warnings.filterwarnings('ignore')
 
+N_CPU = max(1, os.cpu_count() - 1)
+
 
 class LogWindow:
-    """Отдельное окно для детального логирования."""
     def __init__(self, parent):
         self.window = tk.Toplevel(parent)
         self.window.title("Детальные логи конвертации")
-        self.window.geometry("900x700")
+        self.window.geometry("950x750")
         self.window.protocol("WM_DELETE_WINDOW", self.hide)
 
-        # Notebook для вкладок
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Вкладка: Общие логи
-        self.log_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.log_frame, text="Общие логи")
-        self.log_text = scrolledtext.ScrolledText(
-            self.log_frame, wrap=tk.WORD, font=("Consolas", 9)
-        )
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        tabs = [
+            ("general", "Общие логи"),
+            ("las", "Информация о LAS"),
+            ("color", "Анализ цвета"),
+            ("glb", "GLB структура"),
+            ("perf", "Производительность"),
+        ]
+        self.texts = {}
+        for tag, title in tabs:
+            frame = ttk.Frame(self.notebook)
+            self.notebook.add(frame, text=title)
+            txt = scrolledtext.ScrolledText(frame, wrap=tk.WORD, font=("Consolas", 9))
+            txt.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            self.texts[tag] = txt
 
-        # Вкладка: Информация о LAS файле
-        self.las_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.las_frame, text="Информация о LAS")
-        self.las_text = scrolledtext.ScrolledText(
-            self.las_frame, wrap=tk.WORD, font=("Consolas", 10)
-        )
-        self.las_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Вкладка: Информация о цвете
-        self.color_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.color_frame, text="Анализ цвета")
-        self.color_text = scrolledtext.ScrolledText(
-            self.color_frame, wrap=tk.WORD, font=("Consolas", 10)
-        )
-        self.color_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Вкладка: GLB структура
-        self.glb_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.glb_frame, text="GLB структура")
-        self.glb_text = scrolledtext.ScrolledText(
-            self.glb_frame, wrap=tk.WORD, font=("Consolas", 9)
-        )
-        self.glb_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Кнопки
         btn_frame = ttk.Frame(self.window)
         btn_frame.pack(fill=tk.X, padx=5, pady=5)
         ttk.Button(btn_frame, text="Очистить", command=self.clear_all).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Скрыть", command=self.hide).pack(side=tk.LEFT, padx=5)
 
         self.hidden = False
+        self._lock = threading.Lock()
 
     def show(self):
         self.window.deiconify()
@@ -76,56 +80,60 @@ class LogWindow:
         self.hidden = True
 
     def toggle(self):
-        if self.hidden:
-            self.show()
-        else:
-            self.hide()
+        self.show() if self.hidden else self.hide()
 
     def log(self, message, tag="general"):
-        if tag == "las":
-            target = self.las_text
-        elif tag == "color":
-            target = self.color_text
-        elif tag == "glb":
-            target = self.glb_text
-        else:
-            target = self.log_text
-
-        target.config(state='normal')
-        target.insert(tk.END, str(message) + "\n")
-        target.see(tk.END)
-        target.config(state='disabled')
+        with self._lock:
+            target = self.texts.get(tag, self.texts["general"])
+            target.config(state='normal')
+            target.insert(tk.END, str(message) + "\n")
+            target.see(tk.END)
+            target.config(state='disabled')
 
     def clear_all(self):
-        for widget in [self.log_text, self.las_text, self.color_text, self.glb_text]:
-            widget.config(state='normal')
-            widget.delete(1.0, tk.END)
-            widget.config(state='disabled')
+        for txt in self.texts.values():
+            txt.config(state='normal')
+            txt.delete(1.0, tk.END)
+            txt.config(state='disabled')
+
+
+class Timer:
+    def __init__(self, name, log_callback, tag="perf"):
+        self.name = name
+        self.log = log_callback
+        self.tag = tag
+        self.t0 = None
+
+    def __enter__(self):
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *args):
+        elapsed = time.time() - self.t0
+        self.log(f"[TIMER] {self.name}: {elapsed:.2f} сек", self.tag)
 
 
 class LASConverterGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Конвертер LAS в цветной GLB")
-        self.root.geometry("650x550")
+        self.root.title("Конвертер LAS → GLB (High-Perf v2)")
+        self.root.geometry("720x620")
         self.root.resizable(True, True)
 
-        # Переменные
         self.input_file = tk.StringVar()
         self.output_file = tk.StringVar()
-        self.max_vertices = tk.IntVar(value=50000)
-        self.k_neighbors = tk.IntVar(value=20)
+        self.max_vertices = tk.IntVar(value=100000)
+        self.k_neighbors = tk.IntVar(value=15)
+        self.decimate_before = tk.IntVar(value=500000)
         self.open_after_convert = tk.BooleanVar(value=True)
         self.color_mode = tk.StringVar(value="color")
-        self.material_mode = tk.StringVar(value="standard")
+        self.material_mode = tk.StringVar(value="basic")
         self.status = tk.StringVar(value="Готов к работе")
         self.progress = tk.DoubleVar(value=0)
 
         self._cancel_event = threading.Event()
-        self._las_colors_raw = None  # Сырые цвета из LAS
-        self._las_colors_normalized = None  # Нормализованные цвета
+        self._cancel_event.clear()
 
-        # Окно логов
         self.log_window = LogWindow(root)
         self.log_window.hide()
 
@@ -138,23 +146,20 @@ class LASConverterGUI:
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
 
-        title_label = ttk.Label(main_frame, text="Конвертер LAS в цветной GLB",
-                               font=("Arial", 16, "bold"))
-        title_label.grid(row=0, column=0, columnspan=3, pady=10)
+        ttk.Label(main_frame, text="Конвертер LAS → GLB (High-Perf v2)",
+                 font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=3, pady=10)
 
         # Входной файл
-        ttk.Label(main_frame, text="Входной LAS файл:", font=("Arial", 10)).grid(
-            row=1, column=0, sticky=tk.W, pady=5)
-        self.input_entry = ttk.Entry(main_frame, textvariable=self.input_file, width=50)
-        self.input_entry.grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Label(main_frame, text="Входной LAS файл:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(main_frame, textvariable=self.input_file, width=50).grid(
+            row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
         ttk.Button(main_frame, text="Обзор...", command=self.select_input_file).grid(
             row=1, column=2, padx=5, pady=5)
 
         # Выходной файл
-        ttk.Label(main_frame, text="Выходной GLB файл:", font=("Arial", 10)).grid(
-            row=2, column=0, sticky=tk.W, pady=5)
-        self.output_entry = ttk.Entry(main_frame, textvariable=self.output_file, width=50)
-        self.output_entry.grid(row=2, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
+        ttk.Label(main_frame, text="Выходной GLB файл:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(main_frame, textvariable=self.output_file, width=50).grid(
+            row=2, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
         ttk.Button(main_frame, text="Обзор...", command=self.select_output_file).grid(
             row=2, column=2, padx=5, pady=5)
 
@@ -166,51 +171,58 @@ class LASConverterGUI:
         params_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=10)
         params_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(params_frame, text="Макс. вершин:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
-        ttk.Spinbox(params_frame, from_=3, to=1000000, textvariable=self.max_vertices, width=15).grid(
-            row=0, column=1, sticky=tk.W, padx=5, pady=2)
-        ttk.Label(params_frame, text="(упрощение меша)").grid(row=0, column=2, sticky=tk.W, padx=5, pady=2)
+        row = 0
+        ttk.Label(params_frame, text="Макс. вершин в GLB:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Spinbox(params_frame, from_=3, to=2000000, textvariable=self.max_vertices, width=15).grid(
+            row=row, column=1, sticky=tk.W, padx=5, pady=2)
+        ttk.Label(params_frame, text="(итоговое в файле)").grid(row=row, column=2, sticky=tk.W, padx=5, pady=2)
 
-        ttk.Label(params_frame, text="Соседей для нормалей:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        row += 1
+        ttk.Label(params_frame, text="Децимация до нормалей:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Spinbox(params_frame, from_=1000, to=10000000, textvariable=self.decimate_before, width=15).grid(
+            row=row, column=1, sticky=tk.W, padx=5, pady=2)
+        ttk.Label(params_frame, text="(уменьшить перед нормалями)").grid(row=row, column=2, sticky=tk.W, padx=5, pady=2)
+
+        row += 1
+        ttk.Label(params_frame, text="Соседей для нормалей:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
         ttk.Spinbox(params_frame, from_=3, to=100, textvariable=self.k_neighbors, width=15).grid(
-            row=1, column=1, sticky=tk.W, padx=5, pady=2)
-        ttk.Label(params_frame, text="(качество нормалей)").grid(row=1, column=2, sticky=tk.W, padx=5, pady=2)
+            row=row, column=1, sticky=tk.W, padx=5, pady=2)
+        ttk.Label(params_frame, text="(меньше = быстрее)").grid(row=row, column=2, sticky=tk.W, padx=5, pady=2)
 
-        ttk.Label(params_frame, text="Цветовой режим:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
-        color_frame = ttk.Frame(params_frame)
-        color_frame.grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=5, pady=2)
-        ttk.Radiobutton(color_frame, text="Цветной (из LAS)", variable=self.color_mode, value="color").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(color_frame, text="Серый", variable=self.color_mode, value="gray").pack(side=tk.LEFT, padx=5)
+        row += 1
+        ttk.Label(params_frame, text="Цветовой режим:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+        cf = ttk.Frame(params_frame)
+        cf.grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        ttk.Radiobutton(cf, text="Цветной", variable=self.color_mode, value="color").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(cf, text="Серый", variable=self.color_mode, value="gray").pack(side=tk.LEFT, padx=5)
 
-        ttk.Label(params_frame, text="Тип материала:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=2)
-        material_frame = ttk.Frame(params_frame)
-        material_frame.grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=5, pady=2)
-        ttk.Radiobutton(material_frame, text="Standard", variable=self.material_mode, value="standard").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(material_frame, text="Basic (unlit)", variable=self.material_mode, value="basic").pack(side=tk.LEFT, padx=5)
+        row += 1
+        ttk.Label(params_frame, text="Тип материала:").grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+        mf = ttk.Frame(params_frame)
+        mf.grid(row=row, column=1, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        ttk.Radiobutton(mf, text="Standard", variable=self.material_mode, value="standard").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(mf, text="Basic (unlit)", variable=self.material_mode, value="basic").pack(side=tk.LEFT, padx=5)
 
+        row += 1
         ttk.Checkbutton(params_frame, text="Открыть GLB после конвертации",
-                       variable=self.open_after_convert).grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=5)
+                       variable=self.open_after_convert).grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
 
         # Кнопки
         btn_frame = ttk.Frame(main_frame)
         btn_frame.grid(row=5, column=0, columnspan=3, pady=10)
-
         self.convert_button = ttk.Button(btn_frame, text="Начать конвертацию", command=self.start_conversion)
         self.convert_button.pack(side=tk.LEFT, padx=5)
-
         self.cancel_button = ttk.Button(btn_frame, text="Отмена", command=self.cancel_conversion, state='disabled')
         self.cancel_button.pack(side=tk.LEFT, padx=5)
-
         ttk.Button(btn_frame, text="Детальные логи", command=self.log_window.toggle).pack(side=tk.LEFT, padx=5)
 
-        # Прогресс и статус
+        # Прогресс
         self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress, maximum=100, length=400)
         self.progress_bar.grid(row=6, column=0, columnspan=3, pady=5, sticky=(tk.W, tk.E))
 
         self.status_label = ttk.Label(main_frame, textvariable=self.status, font=("Arial", 9), wraplength=550)
         self.status_label.grid(row=7, column=0, columnspan=3, pady=5)
 
-        # Лог в главном окне
         self.main_log = tk.Text(main_frame, height=8, width=70, state='disabled', wrap=tk.WORD)
         self.main_log.grid(row=8, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E, tk.N, tk.S))
         main_frame.rowconfigure(8, weight=1)
@@ -219,12 +231,12 @@ class LASConverterGUI:
         scrollbar.grid(row=8, column=3, sticky=(tk.N, tk.S))
         self.main_log['yscrollcommand'] = scrollbar.set
 
-        # Инфо
         info_frame = ttk.LabelFrame(main_frame, text="Информация", padding="5")
         info_frame.grid(row=9, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
         info_text = (
-            "Поддерживаемые форматы: .las, .laz (требуется lazrs)\n"
-            "GLB: interleaved vertices [pos+normal+color], цвет через COLOR_0 attribute"
+            "Оптимизации: numpy-only voxel decimate (без np.unique), cKDTree, SVD PCA, "
+            f"параллельный query ({N_CPU} ядер)\n"
+            "Для 25M точек: децимируйте до 500K перед нормалями"
         )
         ttk.Label(info_frame, text=info_text, font=("Arial", 8), justify=tk.LEFT).grid(row=0, column=0, sticky=tk.W)
 
@@ -239,17 +251,16 @@ class LASConverterGUI:
             self.input_file.set(file_path)
             if not self.output_file.get():
                 self.output_file.set(os.path.splitext(file_path)[0] + '.glb')
-            self.update_status(f"Выбран файл: {os.path.basename(file_path)}")
-            # Предварительный анализ LAS
+            self.update_status(f"Выбран: {os.path.basename(file_path)}")
             self.preview_las_info(file_path)
 
     def preview_las_info(self, file_path):
-        """Предварительный анализ LAS файла без конвертации."""
         try:
             self.log_window.clear_all()
             self.log_window.show()
 
             las = laspy.read(file_path)
+            n_points = len(las.points)
 
             info = []
             info.append("=" * 60)
@@ -257,81 +268,51 @@ class LASConverterGUI:
             info.append("=" * 60)
             info.append(f"Файл: {file_path}")
             info.append(f"Версия LAS: {las.header.version}")
-            info.append(f"Количество точек: {len(las.points):,}")
-            info.append(f"Точность (scale): X={las.header.scales[0]}, Y={las.header.scales[1]}, Z={las.header.scales[2]}")
-            info.append(f"Смещение (offset): X={las.header.offsets[0]}, Y={las.header.offsets[1]}, Z={las.header.offsets[2]}")
-            info.append("")
-            info.append("Доступные dimensions (поля):")
-            for dim in las.point_format.dimensions:
-                info.append(f"  - {dim.name}: тип={dim.dtype}")
-            info.append("")
+            info.append(f"Point format: {las.point_format.id}")
+            info.append(f"Количество точек: {n_points:,}")
+            info.append(f"Размер файла: {os.path.getsize(file_path) / (1024*1024):.1f} MB")
+            info.append(f"Scale: X={las.header.scales[0]:.6f}, Y={las.header.scales[1]:.6f}, Z={las.header.scales[2]:.6f}")
 
-            # Проверка цвета
-            has_red = hasattr(las, 'red')
-            has_green = hasattr(las, 'green')
-            has_blue = hasattr(las, 'blue')
+            bbox = [las.x.min(), las.x.max(), las.y.min(), las.y.max(), las.z.min(), las.z.max()]
+            info.append(f"\nBounding box:")
+            info.append(f"  X: [{bbox[0]:.2f}, {bbox[1]:.2f}]")
+            info.append(f"  Y: [{bbox[2]:.2f}, {bbox[3]:.2f}]")
+            info.append(f"  Z: [{bbox[4]:.2f}, {bbox[5]:.2f}]")
 
-            info.append("ЦВЕТОВЫЕ ДАННЫЕ:")
-            info.append(f"  red: {'ПРИСУТСТВУЕТ' if has_red else 'ОТСУТСТВУЕТ'}")
-            info.append(f"  green: {'ПРИСУТСТВУЕТ' if has_green else 'ОТСУТСТВУЕТ'}")
-            info.append(f"  blue: {'ПРИСУТСТВУЕТ' if has_blue else 'ОТСУТСТВУЕТ'}")
+            has_color = hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue')
+            info.append(f"\nЦВЕТ: {'✅ ПРИСУТСТВУЕТ' if has_color else '❌ ОТСУТСТВУЕТ'}")
 
-            if has_red and has_green and has_blue:
-                red_vals = np.array(las.red)
-                green_vals = np.array(las.green)
-                blue_vals = np.array(las.blue)
+            if has_color:
+                r = np.array(las.red)
+                max_c = max(r.max(), np.array(las.green).max(), np.array(las.blue).max())
+                info.append(f"  Битность: {'16-бит' if max_c > 255 else '8-бит'} (max={max_c})")
 
-                info.append("")
-                info.append("СТАТИСТИКА ЦВЕТОВ (сырые значения из LAS):")
-                info.append(f"  RED:   min={red_vals.min()}, max={red_vals.max()}, mean={red_vals.mean():.2f}")
-                info.append(f"  GREEN: min={green_vals.min()}, max={green_vals.max()}, mean={green_vals.mean():.2f}")
-                info.append(f"  BLUE:  min={blue_vals.min()}, max={blue_vals.max()}, mean={blue_vals.mean():.2f}")
-                info.append(f"  Уникальных значений RED: {len(np.unique(red_vals))}")
-
-                # Определяем битность
-                max_color = max(red_vals.max(), green_vals.max(), blue_vals.max())
-                if max_color > 255:
-                    info.append(f"  Битность: 16-бит (0-65535), max={max_color}")
-                else:
-                    info.append(f"  Битность: 8-бит (0-255), max={max_color}")
-
-                # Примеры цветов
-                info.append("")
-                info.append("ПЕРВЫЕ 10 ТОЧЕК (сырые RGB):")
-                for i in range(min(10, len(las.points))):
-                    info.append(f"  Точка {i}: R={las.red[i]}, G={las.green[i]}, B={las.blue[i]}")
+            info.append("\nРЕКОМЕНДАЦИИ:")
+            if n_points > 10000000:
+                info.append(f"  ⚠️ {n_points:,} точек — ОБЯЗАТЕЛЬНО децимируйте до 500K-1M")
+                self.decimate_before.set(min(500000, n_points))
+            elif n_points > 1000000:
+                info.append(f"  ℹ️ {n_points:,} точек — рекомендуется децимация до 200K-500K")
             else:
-                info.append("\n⚠️ ЦВЕТОВЫЕ ДАННЫЕ ОТСУТСТВУЮТ! GLB будет серым.")
-
-            # Проверка intensity
-            if hasattr(las, 'intensity'):
-                info.append("")
-                info.append(f"Intensity: min={las.intensity.min()}, max={las.intensity.max()}")
-
-            # Проверка classification
-            if hasattr(las, 'classification'):
-                classes = np.unique(las.classification)
-                info.append("")
-                info.append(f"Классификации: {classes}")
+                info.append(f"  ✅ {n_points:,} точек — можно без децимации")
 
             for line in info:
                 self.log_window.log(line, "las")
 
-            self.main_log_message("LAS файл проанализирован. Откройте 'Детальные логи' для подробностей.")
+            self.main_log_message("LAS проанализирован. См. 'Детальные логи'.")
 
         except Exception as e:
-            self.log_window.log(f"Ошибка анализа LAS: {e}", "las")
-            self.main_log_message(f"Ошибка анализа: {e}")
+            self.log_window.log(f"Ошибка анализа: {e}", "las")
+            self.main_log_message(f"Ошибка: {e}")
 
     def select_output_file(self):
         file_path = filedialog.asksaveasfilename(
-            title="Сохранить GLB файл как",
-            defaultextension=".glb",
+            title="Сохранить GLB", defaultextension=".glb",
             filetypes=[("GLB files", "*.glb"), ("All files", "*.*")]
         )
         if file_path:
             self.output_file.set(file_path)
-            self.update_status(f"Выходной файл: {os.path.basename(file_path)}")
+            self.update_status(f"Выходной: {os.path.basename(file_path)}")
 
     def update_status(self, message):
         self.status.set(message)
@@ -356,30 +337,26 @@ class LASConverterGUI:
 
     def open_glb_file(self, file_path):
         try:
-            self.main_log_message(f"Открытие файла: {file_path}")
+            self.main_log_message(f"Открытие: {file_path}")
             system = platform.system()
             if system == "Windows":
                 os.startfile(file_path)
             elif system == "Darwin":
                 subprocess.run(["open", file_path], check=True)
             else:
-                viewers = [["xdg-open", file_path], ["gnome-open", file_path], ["kde-open", file_path]]
-                for viewer in viewers:
+                for viewer in [["xdg-open", file_path], ["gnome-open", file_path], ["kde-open", file_path]]:
                     try:
                         subprocess.run(viewer, check=True)
                         break
                     except (subprocess.CalledProcessError, FileNotFoundError):
                         continue
-                else:
-                    self.main_log_message("Не найден подходящий просмотрщик файлов")
-                    return
             self.main_log_message("Файл открыт")
         except Exception as e:
-            self.main_log_message(f"Не удалось открыть файл: {e}")
+            self.main_log_message(f"Не удалось открыть: {e}")
 
     def cancel_conversion(self):
         self._cancel_event.set()
-        self.main_log_message("Запрошена отмена...")
+        self.main_log_message("Отмена запрошена...")
         self.cancel_button.config(state='disabled')
 
     def start_conversion(self):
@@ -387,16 +364,20 @@ class LASConverterGUI:
             messagebox.showerror("Ошибка", "Выберите входной LAS файл")
             return
         if not self.output_file.get():
-            messagebox.showerror("Ошибка", "Укажите выходной GLB файл")
+            messagebox.showerror("Ошибка", "Укажите выходной GLB")
             return
         max_v = self.max_vertices.get()
         k_n = self.k_neighbors.get()
+        dec = self.decimate_before.get()
         if max_v < 3:
-            messagebox.showerror("Ошибка", "Макс. вершин должно быть >= 3")
+            messagebox.showerror("Ошибка", "Макс. вершин >= 3")
             return
         if k_n < 3:
-            messagebox.showerror("Ошибка", "Соседей должно быть >= 3")
+            messagebox.showerror("Ошибка", "Соседей >= 3")
             return
+        if dec < max_v:
+            self.decimate_before.set(max_v)
+            self.main_log_message(f"Децимация скорректирована до {max_v}")
 
         self.log_window.clear_all()
         self.log_window.show()
@@ -413,60 +394,84 @@ class LASConverterGUI:
         thread = threading.Thread(target=self.convert, daemon=True)
         thread.start()
 
-    def _check_cancelled(self):
+    def _check_cancelled(self, msg=""):
         if self._cancel_event.is_set():
-            raise InterruptedError("Отменено")
+            raise InterruptedError(f"Отменено {msg}".strip())
 
     def convert(self):
+        total_start = time.time()
         output_path = self.output_file.get()
+
         try:
-            self.main_log_message("Начинаем конвертацию...")
-            self.log_window.log("=== НАЧАЛО КОНВЕРТАЦИИ ===", "general")
-            self.update_progress(5)
+            self.main_log_message("=== НАЧАЛО КОНВЕРТАЦИИ ===")
+            self.update_progress(2)
             self._check_cancelled()
 
-            # Чтение LAS
-            self.main_log_message(f"Чтение LAS: {self.input_file.get()}")
-            points, colors, las_info = self.read_las_file(self.input_file.get())
-            self.main_log_message(f"Загружено {len(points)} точек")
-            self.update_progress(15)
+            # === 1. ЧТЕНИЕ LAS ===
+            with Timer("Чтение LAS", self.log_window.log):
+                self.main_log_message(f"Чтение: {self.input_file.get()}")
+                points, colors, las_info = self.read_las_file(self.input_file.get())
+                n_raw = len(points)
+                self.main_log_message(f"Загружено {n_raw:,} точек")
+                self.log_window.log(f"Исходных точек: {n_raw:,}", "perf")
+            self.update_progress(10)
             self._check_cancelled()
 
-            # Нормали
-            self.main_log_message("Вычисление нормалей...")
-            normals = self.estimate_normals(points, self.k_neighbors.get())
-            self.main_log_message("Нормали готовы")
-            self.update_progress(35)
+            # === 2. ДЕЦИМАЦИЯ ===
+            decimate_target = self.decimate_before.get()
+            if n_raw > decimate_target:
+                with Timer(f"Децимация", self.log_window.log):
+                    self.main_log_message(f"Децимация: {n_raw:,} -> ~{decimate_target:,}...")
+                    points, colors = self.fast_voxel_decimate_v2(points, colors, decimate_target)
+                    self.main_log_message(f"После децимации: {len(points):,} точек")
+                    self.log_window.log(f"После децимации: {len(points):,}", "perf")
+            else:
+                self.log_window.log(f"Децимация не нужна ({n_raw:,} <= {decimate_target:,})", "perf")
+            self.update_progress(20)
             self._check_cancelled()
 
-            # Меш
-            self.main_log_message("Построение меша...")
-            points, triangles, colors, normals = self.build_mesh(points, normals, colors, self.max_vertices.get())
-            self.main_log_message(f"Треугольников: {len(triangles)}")
-            self.update_progress(55)
+            # === 3. НОРМАЛИ ===
+            with Timer("Нормали", self.log_window.log):
+                self.main_log_message(f"Нормали для {len(points):,} точек...")
+                normals = self.estimate_normals_fast(points, self.k_neighbors.get())
+                self.main_log_message("Нормали готовы")
+            self.update_progress(50)
             self._check_cancelled()
 
-            # Логирование цвета перед записью
-            self.log_color_info(points, colors, "ЦВЕТ ПЕРЕД ЗАПИСЬЮ В GLB")
+            # === 4. МЕШ ===
+            with Timer("Меш", self.log_window.log):
+                self.main_log_message("Построение меша...")
+                points, triangles, colors, normals = self.build_mesh(
+                    points, normals, colors, self.max_vertices.get()
+                )
+                self.main_log_message(f"Треугольников: {len(triangles):,}")
+            self.update_progress(70)
+            self._check_cancelled()
 
-            # Запись GLB
-            self.main_log_message(f"Сохранение GLB: {output_path}")
-            self.write_glb(points, triangles, colors, normals, output_path)
-            self.main_log_message("GLB создан!")
+            # === 5. GLB ===
+            with Timer("GLB", self.log_window.log):
+                self.main_log_message(f"Сохранение: {output_path}")
+                self.write_glb(points, triangles, colors, normals, output_path)
+                self.main_log_message("GLB создан!")
             self.update_progress(100)
+
+            total_time = time.time() - total_start
+            self.log_window.log(f"\n=== ОБЩЕЕ ВРЕМЯ: {total_time:.1f} сек ===", "perf")
 
             self.update_status("Готово!")
             self.show_success(
                 f"Конвертация завершена!\n\n"
-                f"Вершин: {len(points)}\n"
-                f"Треугольников: {len(triangles)}"
+                f"Исходных: {n_raw:,}\n"
+                f"Вершин: {len(points):,}\n"
+                f"Треугольников: {len(triangles):,}\n"
+                f"Время: {total_time:.1f} сек"
             )
 
             if self.open_after_convert.get():
                 self.open_glb_file(output_path)
 
         except InterruptedError:
-            self.main_log_message("Отменено пользователем")
+            self.main_log_message("Отменено")
             self.update_status("Отменено")
         except Exception as e:
             error_msg = f"Ошибка: {str(e)}"
@@ -480,199 +485,224 @@ class LASConverterGUI:
             self.root.after(0, lambda: self.cancel_button.config(state='disabled'))
 
     def read_las_file(self, file_path):
-        """Чтение LAS с детальным логированием цвета."""
         try:
             las = laspy.read(file_path)
         except Exception as e:
             if file_path.lower().endswith('.laz'):
-                raise Exception(f"Не удалось прочитать LAZ. Установите: pip install lazrs\n{e}")
+                raise Exception(f"LAZ требует lazrs: pip install lazrs\n{e}")
             raise
 
-        points = np.vstack((las.x, las.y, las.z)).transpose().astype(np.float64)
+        # Читаем сразу в float32 для экономии памяти
+        points = np.column_stack([las.x, las.y, las.z]).astype(np.float32)
 
-        # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ЦВЕТА ===
         color_log = []
         color_log.append("=" * 60)
-        color_log.append("ЧТЕНИЕ ЦВЕТА ИЗ LAS ФАЙЛА")
+        color_log.append("ЧТЕНИЕ ЦВЕТА ИЗ LAS")
         color_log.append("=" * 60)
 
         has_red = hasattr(las, 'red')
         has_green = hasattr(las, 'green')
         has_blue = hasattr(las, 'blue')
 
-        color_log.append(f"red dimension: {has_red}")
-        color_log.append(f"green dimension: {has_green}")
-        color_log.append(f"blue dimension: {has_blue}")
+        color_log.append(f"red={has_red}, green={has_green}, blue={has_blue}")
 
         if has_red and has_green and has_blue:
             raw_red = np.array(las.red)
             raw_green = np.array(las.green)
             raw_blue = np.array(las.blue)
 
-            self._las_colors_raw = np.column_stack([raw_red, raw_green, raw_blue])
-
-            color_log.append(f"\nСЫРЫЕ ЗНАЧЕНИЯ (первые 20 точек):")
-            for i in range(min(20, len(raw_red))):
-                color_log.append(f"  [{i:4d}] R={raw_red[i]:6d} G={raw_green[i]:6d} B={raw_blue[i]:6d}")
-
-            color_log.append(f"\nСТАТИСТИКА СЫРЫХ ЗНАЧЕНИЙ:")
-            color_log.append(f"  RED:   min={raw_red.min():6d}, max={raw_red.max():6d}, mean={raw_red.mean():.2f}")
-            color_log.append(f"  GREEN: min={raw_green.min():6d}, max={raw_green.max():6d}, mean={raw_green.mean():.2f}")
-            color_log.append(f"  BLUE:  min={raw_blue.min():6d}, max={raw_blue.max():6d}, mean={raw_blue.mean():.2f}")
-
-            # Определяем битность и нормализуем
             max_val = max(raw_red.max(), raw_green.max(), raw_blue.max())
             if max_val > 255:
-                color_log.append(f"\nОпределена битность: 16-бит (max={max_val})")
-                color_log.append(f"Нормализация: делим на 65535.0")
+                color_log.append(f"16-бит (max={max_val})")
                 colors = np.column_stack([raw_red, raw_green, raw_blue]).astype(np.float32) / 65535.0
             else:
-                color_log.append(f"\nОпределена битность: 8-бит (max={max_val})")
-                color_log.append(f"Нормализация: делим на 255.0")
+                color_log.append(f"8-бит (max={max_val})")
                 colors = np.column_stack([raw_red, raw_green, raw_blue]).astype(np.float32) / 255.0
 
             colors = np.clip(colors, 0.0, 1.0)
-            self._las_colors_normalized = colors.copy()
-
-            color_log.append(f"\nНОРМАЛИЗОВАННЫЕ ЦВЕТА [0-1] (первые 20 точек):")
-            for i in range(min(20, len(colors))):
-                color_log.append(f"  [{i:4d}] R={colors[i,0]:.4f} G={colors[i,1]:.4f} B={colors[i,2]:.4f}")
-
-            color_log.append(f"\nСТАТИСТИКА НОРМАЛИЗОВАННЫХ ЦВЕТОВ:")
-            color_log.append(f"  RED:   min={colors[:,0].min():.4f}, max={colors[:,0].max():.4f}, mean={colors[:,0].mean():.4f}")
-            color_log.append(f"  GREEN: min={colors[:,1].min():.4f}, max={colors[:,1].max():.4f}, mean={colors[:,1].mean():.4f}")
-            color_log.append(f"  BLUE:  min={colors[:,2].min():.4f}, max={colors[:,2].max():.4f}, mean={colors[:,2].mean():.4f}")
-
-            # Проверка на монохромность
-            if np.allclose(colors[:,0], colors[:,1]) and np.allclose(colors[:,1], colors[:,2]):
-                color_log.append("\n⚠️ ВНИМАНИЕ: Все цвета примерно одинаковые (монохромные)!")
-
-            # Проверка на нулевые цвета
-            if colors.max() < 0.01:
-                color_log.append("\n⚠️ ВНИМАНИЕ: Все цвета близки к нулю (чёрные)!")
-
+            color_log.append(f"Нормализованные: min={colors.min():.4f}, max={colors.max():.4f}")
         else:
-            color_log.append("\n⚠️ ЦВЕТОВЫЕ ДАННЫЕ ОТСУТСТВУЮТ!")
-            color_log.append("Используем серый цвет (0.5, 0.5, 0.5)")
-            colors = np.ones((len(points), 3), dtype=np.float32) * 0.5
+            color_log.append("⚠️ ЦВЕТ ОТСУТСТВУЕТ — серый")
+            colors = np.full((len(points), 3), 0.5, dtype=np.float32)
 
-        # Серый режим
         if self.color_mode.get() == "gray":
-            color_log.append("\n>>> Режим 'Серый' активирован <<<")
+            color_log.append(">>> Режим 'Серый' <<<")
             gray = 0.299 * colors[:, 0] + 0.587 * colors[:, 1] + 0.114 * colors[:, 2]
             colors = np.column_stack([gray, gray, gray]).astype(np.float32)
-            color_log.append(f"Первые 10 серых значений: {colors[:10, 0]}")
 
         for line in color_log:
             self.log_window.log(line, "color")
 
-        # Инфо о LAS для return
-        las_info = {
-            'version': str(las.header.version),
-            'point_count': len(las.points),
-            'has_color': has_red and has_green and has_blue,
-            'dimensions': [d.name for d in las.point_format.dimensions]
-        }
+        return points, colors, {}
 
-        return points, colors, las_info
+    def fast_voxel_decimate_v2(self, points, colors, target_count):
+        """Быстрая однопроходная воксельная децимация без np.unique.
 
-    def log_color_info(self, points, colors, title):
-        """Логирование информации о цвете в любой момент."""
-        info = []
-        info.append("=" * 60)
-        info.append(title)
-        info.append("=" * 60)
-        info.append(f"Количество вершин: {len(colors)}")
-        info.append(f"Форма массива цветов: {colors.shape}")
-        info.append(f"Тип данных: {colors.dtype}")
-        info.append(f"Min: [{colors[:,0].min():.4f}, {colors[:,1].min():.4f}, {colors[:,2].min():.4f}]")
-        info.append(f"Max: [{colors[:,0].max():.4f}, {colors[:,1].max():.4f}, {colors[:,2].max():.4f}]")
-        info.append(f"Mean: [{colors[:,0].mean():.4f}, {colors[:,1].mean():.4f}, {colors[:,2].mean():.4f}]")
-        info.append(f"Первые 10 цветов:")
-        for i in range(min(10, len(colors))):
-            info.append(f"  [{i}] ({points[i,0]:.2f}, {points[i,1]:.2f}, {points[i,2]:.2f}) -> "
-                       f"RGB=({colors[i,0]:.4f}, {colors[i,1]:.4f}, {colors[i,2]:.4f})")
+        Алгоритм:
+        1. Вычисляем voxel_size из target_count и bbox
+        2. floor(points / voxel_size) -> voxel_coords
+        3. Сортируем по voxel_coords и группируем через np.diff (O(n log n) однократно)
+        4. Усредняем точки и цвета в каждом вокселе
+        """
+        import time
+        n_points = len(points)
+        if n_points <= target_count:
+            return points, colors
 
-        # Проверка на NaN/Inf
-        has_nan = np.isnan(colors).any()
-        has_inf = np.isinf(colors).any()
-        if has_nan:
-            info.append("⚠️ Обнаружены NaN в цветах!")
-        if has_inf:
-            info.append("⚠️ Обнаружены Inf в цветах!")
+        t0_total = time.time()
+        self.log_window.log(f"  Начало децимации: {n_points:,} -> ~{target_count:,}", "perf")
 
-        for line in info:
-            self.log_window.log(line, "color")
+        # === Шаг 1: Определяем voxel_size напрямую ===
+        bbox = points.max(axis=0) - points.min(axis=0)
+        bbox = np.where(bbox == 0, 1.0, bbox)  # защита от нулевых измерений
+        volume = np.prod(bbox)
 
-    def estimate_normals(self, points, k_neighbors=20):
+        # voxel_size = (volume / target_count)^(1/3) * коэффициент
+        # Коэффициент ~1.5 чтобы гарантировать <= target_count
+        #voxel_size = (volume / (target_count * 1.5)) ** (1/3)
+        voxel_size = (volume / (target_count*100)) ** (1/3)
+        voxel_size = max(voxel_size, 1e-6)  # защита от слишком маленького
+
+        self.log_window.log(f"  voxel_size={voxel_size:.6f}, bbox={bbox}", "perf")
+
+        # === Шаг 2: Вычисляем координаты вокселей ===
+        t0 = time.time()
+        voxel_coords = np.floor(points / voxel_size).astype(np.int32)
+        self.log_window.log(f"  floor division: {time.time()-t0:.2f} сек", "perf")
+        self._check_cancelled("(дécимация: floor)")
+
+        # === Шаг 3: Сортируем по voxel_coords и группируем ===
+        # Кодируем 3D координаты в 1D ключ для сортировки
+        t0 = time.time()
+
+        # Сдвигаем координаты в положительный диапазон
+        min_coords = voxel_coords.min(axis=0)
+        shifted = voxel_coords - min_coords
+
+        # Создаём 1D ключ: x * Ymax * Zmax + y * Zmax + z
+        # Используем int64 чтобы избежать переполнения
+        max_shifted = shifted.max(axis=0) + 1
+        keys = shifted[:, 0].astype(np.int64) * max_shifted[1] * max_shifted[2] + \
+               shifted[:, 1].astype(np.int64) * max_shifted[2] + \
+               shifted[:, 2].astype(np.int64)
+
+        self.log_window.log(f"  Кодирование ключей: {time.time()-t0:.2f} сек", "perf")
+        self._check_cancelled("(дécимация: кодирование)")
+
+        # === Шаг 4: Сортируем по ключам ===
+        t0 = time.time()
+        sort_order = np.argsort(keys, kind='mergesort')  # mergesort - стабильный
+        sorted_keys = keys[sort_order]
+        sorted_points = points[sort_order]
+        sorted_colors = colors[sort_order]
+
+        self.log_window.log(f"  Сортировка: {time.time()-t0:.2f} сек", "perf")
+        self._check_cancelled("(дécимация: сортировка)")
+
+        # === Шаг 5: Находим границы групп ===
+        t0 = time.time()
+        diff = np.diff(sorted_keys)
+        group_starts = np.concatenate([[0], np.where(diff != 0)[0] + 1])
+        group_ends = np.concatenate([group_starts[1:], [len(sorted_keys)]])
+        n_groups = len(group_starts)
+
+        self.log_window.log(f"  Группировка: {time.time()-t0:.2f} сек, групп={n_groups:,}", "perf")
+        self._check_cancelled("(дécимация: группировка)")
+
+        # === Шаг 6: Усредняем точки и цвета в каждой группе ===
+        t0 = time.time()
+
+        new_points = np.zeros((n_groups, 3), dtype=np.float32)
+        new_colors = np.zeros((n_groups, 3), dtype=np.float32)
+
+        # Векторизованное усреднение через np.add.reduceat
+        new_points[:, 0] = np.add.reduceat(sorted_points[:, 0], group_starts) / (group_ends - group_starts)
+        new_points[:, 1] = np.add.reduceat(sorted_points[:, 1], group_starts) / (group_ends - group_starts)
+        new_points[:, 2] = np.add.reduceat(sorted_points[:, 2], group_starts) / (group_ends - group_starts)
+
+        new_colors[:, 0] = np.add.reduceat(sorted_colors[:, 0], group_starts) / (group_ends - group_starts)
+        new_colors[:, 1] = np.add.reduceat(sorted_colors[:, 1], group_starts) / (group_ends - group_starts)
+        new_colors[:, 2] = np.add.reduceat(sorted_colors[:, 2], group_starts) / (group_ends - group_starts)
+
+        self.log_window.log(f"  Усреднение: {time.time()-t0:.2f} сек", "perf")
+
+        # === Шаг 7: Если всё ещё больше target — случайное сэмплирование ===
+        if len(new_points) > target_count:
+            self.log_window.log(f"  Слишком много ({len(new_points):,}), случайное сэмплирование до {target_count:,}", "perf")
+            indices = np.random.choice(len(new_points), target_count, replace=False)
+            new_points = new_points[indices]
+            new_colors = new_colors[indices]
+
+        total_time = time.time() - t0_total
+        self.log_window.log(f"  Итого децимация: {total_time:.2f} сек, результат: {len(new_points):,} точек", "perf")
+
+        return new_points, np.clip(new_colors, 0.0, 1.0)
+
+    def estimate_normals_fast(self, points, k_neighbors=15):
+        """Быстрое вычисление нормалей через cKDTree + SVD."""
         n_points = len(points)
         k = min(k_neighbors + 1, n_points)
-        tree = KDTree(points)
-        distances, indices = tree.query(points, k=k)
+
+        self.log_window.log(f"  KDTree ({n_points:,} точек)...", "perf")
+        t0 = time.time()
+        tree = cKDTree(points)
+        self.log_window.log(f"  KDTree построен: {time.time()-t0:.2f} сек", "perf")
+
+        self.log_window.log(f"  Query {k} соседей...", "perf")
+        t0 = time.time()
+        distances, indices = tree.query(points, k=k, workers=-1)
         indices = indices[:, 1:]
+        self.log_window.log(f"  Query готов: {time.time()-t0:.2f} сек", "perf")
 
-        normals = np.zeros_like(points, dtype=np.float32)
+        self.log_window.log(f"  PCA через SVD...", "perf")
+        t0 = time.time()
 
-        for i in range(n_points):
-            neighbors = points[indices[i]]
-            centroid = np.mean(neighbors, axis=0)
-            centered = neighbors - centroid
-            cov = np.cov(centered.T)
-            eigenvalues, eigenvectors = np.linalg.eigh(cov)
-            normal = eigenvectors[:, 0]
-            if normal[2] < 0:
-                normal = -normal
-            normals[i] = normal
+        normals = np.zeros((n_points, 3), dtype=np.float32)
+        batch_size = max(5000, n_points // 20)
+        n_batches = (n_points + batch_size - 1) // batch_size
 
-            if i % 5000 == 0 and i > 0:
-                self._check_cancelled()
-                progress = 15 + (i / n_points) * 20
-                self.update_progress(progress)
+        for batch_idx in range(n_batches):
+            self._check_cancelled(f"(нормали, батч {batch_idx+1}/{n_batches})")
 
+            start = batch_idx * batch_size
+            end = min(start + batch_size, n_points)
+            batch_n = end - start
+
+            # Собираем соседей
+            neighbors = points[indices[start:end]]  # (batch_n, k-1, 3)
+
+            # Центроиды
+            centroids = np.mean(neighbors, axis=1, keepdims=True)  # (batch_n, 1, 3)
+            centered = neighbors - centroids  # (batch_n, k-1, 3)
+
+            # SVD для каждой точки
+            for i in range(batch_n):
+                try:
+                    u, s, vt = np.linalg.svd(centered[i], full_matrices=False)
+                    normal = vt[-1, :]
+                    if normal[2] < 0:
+                        normal = -normal
+                    normals[start + i] = normal
+                except np.linalg.LinAlgError:
+                    normals[start + i] = [0, 0, 1]
+
+            progress = 20 + ((batch_idx + 1) / n_batches) * 30
+            self.update_progress(progress)
+
+            if batch_idx % max(1, n_batches // 3) == 0:
+                self.main_log_message(f"  Нормали: {end:,}/{n_points:,} ({end/n_points*100:.0f}%)")
+
+        self.log_window.log(f"  PCA: {time.time()-t0:.2f} сек", "perf")
         return normals
-
-    def voxel_downsample(self, points, colors, normals, voxel_size=None):
-        if voxel_size is None:
-            bbox = points.max(axis=0) - points.min(axis=0)
-            volume = np.prod(bbox)
-            max_v = self.max_vertices.get()
-            voxel_size = (volume / max_v) ** (1/3) if volume > 0 else 1.0
-
-        voxel_coords = np.floor(points / voxel_size).astype(np.int32)
-        unique_voxels, inverse, counts = np.unique(
-            voxel_coords, axis=0, return_inverse=True, return_counts=True
-        )
-
-        n_unique = len(unique_voxels)
-        new_points = np.zeros((n_unique, 3), dtype=np.float32)
-        new_colors = np.zeros((n_unique, 3), dtype=np.float32)
-        new_normals = np.zeros((n_unique, 3), dtype=np.float32)
-
-        np.add.at(new_points, inverse, points)
-        np.add.at(new_colors, inverse, colors)
-        np.add.at(new_normals, inverse, normals)
-
-        new_points /= counts[:, None]
-        new_colors /= counts[:, None]
-        new_normals /= counts[:, None]
-
-        norms = np.linalg.norm(new_normals, axis=1, keepdims=True)
-        norms[norms == 0] = 1
-        new_normals /= norms
-
-        return new_points, new_colors, new_normals
 
     def build_mesh(self, points, normals, colors, max_vertices):
         if len(points) > max_vertices:
-            self.main_log_message(f"Упрощение: {len(points)} -> ~{max_vertices}...")
-            points, colors, normals = self.voxel_downsample(points, colors, normals)
-            self.main_log_message(f"После voxel: {len(points)} вершин")
-
-            if len(points) > max_vertices:
-                indices = np.random.choice(len(points), max_vertices, replace=False)
-                points = points[indices]
-                normals = normals[indices]
-                colors = colors[indices]
+            self.main_log_message(f"Финальное упрощение: {len(points):,} -> {max_vertices:,}...")
+            points, colors = self.fast_voxel_decimate_v2(points, colors, max_vertices)
+            # Нормали тоже нужно пересчитать или сэмплировать
+            # Для простоты: пересчитаем нормали для финальных точек
+            normals = self.estimate_normals_fast(points, min(15, len(points)-1))
+            self.main_log_message(f"После упрощения: {len(points):,}")
 
         if len(points) < 3:
             raise Exception("Недостаточно точек (минимум 3)")
@@ -682,6 +712,7 @@ class LASConverterGUI:
             tri = Delaunay(points_2d)
             triangles = tri.simplices
 
+            # Векторизованная фильтрация
             p1 = points[triangles[:, 0]]
             p2 = points[triangles[:, 1]]
             p3 = points[triangles[:, 2]]
@@ -695,42 +726,34 @@ class LASConverterGUI:
             triangles = triangles[valid_mask]
 
             if len(triangles) == 0:
-                self.main_log_message("Все треугольники вырождены, используем fan")
+                self.main_log_message("Все треугольники вырождены, fan")
                 triangles = self.build_simple_mesh(points)
 
         except Exception as e:
-            self.main_log_message(f"Ошибка триангуляции: {e}, используем fan")
+            self.main_log_message(f"Ошибка Delaunay: {e}, fan")
             triangles = self.build_simple_mesh(points)
 
-        return points.astype(np.float32), triangles.astype(np.uint32), colors.astype(np.float32), normals.astype(np.float32)
+        return points, triangles.astype(np.uint32), colors, normals
 
     def build_simple_mesh(self, points):
-        n_points = len(points)
-        if n_points < 3:
+        n = len(points)
+        if n < 3:
             return np.array([], dtype=np.uint32).reshape(0, 3)
-
-        triangles = np.zeros((n_points - 2, 3), dtype=np.uint32)
+        triangles = np.zeros((n - 2, 3), dtype=np.uint32)
         triangles[:, 0] = 0
-        triangles[:, 1] = np.arange(1, n_points - 1)
-        triangles[:, 2] = np.arange(2, n_points)
+        triangles[:, 1] = np.arange(1, n - 1)
+        triangles[:, 2] = np.arange(2, n)
         return triangles
 
     def write_glb(self, points, triangles, colors, normals, output_path):
-        """Запись GLB с корректными цветами."""
         if len(triangles) == 0:
             raise Exception("Нет треугольников!")
 
         vertex_count = len(points)
         triangle_count = len(triangles)
-
-        # === КРИТИЧЕСКИ ВАЖНО: проверяем цвета перед записью ===
-        self.log_color_info(points, colors, "ЦВЕТ ПЕРЕД ЗАПИСЬЮ В GLB (финальная проверка)")
-
-        # Убеждаемся, что цвета в правильном диапазоне [0, 1]
         colors = np.clip(colors, 0.0, 1.0)
 
-        # Interleaved vertex: [pos(12b) + normal(12b) + color(12b)] = 36 bytes
-        vertex_stride = 36
+        vertex_stride = 36  # pos(12) + normal(12) + color(12)
 
         vertex_data = np.zeros((vertex_count, 9), dtype=np.float32)
         vertex_data[:, 0:3] = points
@@ -750,41 +773,6 @@ class LASConverterGUI:
 
         total_buffer_size = vertex_buffer_size + len(index_bytes)
 
-        # === ЛОГИРОВАНИЕ СТРУКТУРЫ GLB ===
-        glb_log = []
-        glb_log.append("=" * 60)
-        glb_log.append("СТРУКТУРА GLB ФАЙЛА")
-        glb_log.append("=" * 60)
-        glb_log.append(f"Вершин: {vertex_count}")
-        glb_log.append(f"Треугольников: {triangle_count}")
-        glb_log.append(f"Размер вершины: {vertex_stride} bytes")
-        glb_log.append(f"Vertex buffer size: {vertex_buffer_size} bytes")
-        glb_log.append(f"Index buffer size: {index_buffer_size} bytes")
-        glb_log.append(f"Total buffer size: {total_buffer_size} bytes")
-        glb_log.append("")
-        glb_log.append("Vertex layout (interleaved):")
-        glb_log.append("  [0-11]:   POSITION (3 x float32)")
-        glb_log.append("  [12-23]:  NORMAL   (3 x float32)")
-        glb_log.append("  [24-35]:  COLOR_0  (3 x float32)")
-        glb_log.append("")
-        glb_log.append("Accessors:")
-        glb_log.append("  [0] POSITION: bufferView=0, byteOffset=0, count={}".format(vertex_count))
-        glb_log.append("  [1] NORMAL:   bufferView=0, byteOffset=12, count={}".format(vertex_count))
-        glb_log.append("  [2] COLOR_0:  bufferView=0, byteOffset=24, count={}".format(vertex_count))
-        glb_log.append("  [3] INDICES:  bufferView=1, byteOffset=0, count={}".format(triangle_count * 3))
-        glb_log.append("")
-        glb_log.append("Первые 5 вершин (hex dump позиций):")
-        for i in range(min(5, vertex_count)):
-            pos_hex = vertex_bytes[i*36:i*36+12].hex()
-            col_hex = vertex_bytes[i*36+24:i*36+36].hex()
-            glb_log.append(f"  [{i}] pos_bytes={pos_hex}, color_bytes={col_hex}")
-            glb_log.append(f"       pos=({points[i,0]:.3f},{points[i,1]:.3f},{points[i,2]:.3f}), "
-                          f"color=({colors[i,0]:.4f},{colors[i,1]:.4f},{colors[i,2]:.4f})")
-
-        for line in glb_log:
-            self.log_window.log(line, "glb")
-
-        # GLTF JSON
         gltf = {
             "asset": {"version": "2.0", "generator": "LAS to GLB Converter"},
             "scene": 0,
@@ -793,9 +781,7 @@ class LASConverterGUI:
             "meshes": [{
                 "primitives": [{
                     "attributes": {"POSITION": 0, "NORMAL": 1, "COLOR_0": 2},
-                    "indices": 3,
-                    "mode": 4,
-                    "material": 0
+                    "indices": 3, "mode": 4, "material": 0
                 }],
                 "name": "Mesh"
             }],
@@ -803,11 +789,9 @@ class LASConverterGUI:
                 "name": "Material",
                 "pbrMetallicRoughness": {
                     "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-                    "metallicFactor": 0.0,
-                    "roughnessFactor": 0.8
+                    "metallicFactor": 0.0, "roughnessFactor": 0.8
                 },
-                "doubleSided": True,
-                "alphaMode": "OPAQUE"
+                "doubleSided": True, "alphaMode": "OPAQUE"
             }],
             "accessors": [
                 {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": vertex_count,
@@ -853,54 +837,7 @@ class LASConverterGUI:
         with open(output_path, 'wb') as f:
             f.write(glb)
 
-        self.main_log_message(f"GLB создан: {vertex_count} вершин, {triangle_count} треугольников")
-        self.log_window.log(f"\nФайл сохранён: {output_path} ({total_length} bytes)", "glb")
-
-        self.validate_glb(output_path)
-
-    def validate_glb(self, file_path):
-        try:
-            with open(file_path, 'rb') as f:
-                magic = struct.unpack('<I', f.read(4))[0]
-                version = struct.unpack('<I', f.read(4))[0]
-                length = struct.unpack('<I', f.read(4))[0]
-
-                file_size = os.path.getsize(file_path)
-                if length != file_size:
-                    self.log_window.log(f"⚠️ Длина в заголовке ({length}) != реальному размеру ({file_size})", "glb")
-                    return
-
-                chunk_len = struct.unpack('<I', f.read(4))[0]
-                chunk_type = struct.unpack('<I', f.read(4))[0]
-
-                if chunk_type != 0x4E4F534A:
-                    self.log_window.log("⚠️ Первый чанк не JSON", "glb")
-                    return
-
-                json_data = f.read(chunk_len).decode('utf-8')
-                gltf_data = json.loads(json_data)
-
-                # Проверяем наличие COLOR_0
-                has_color = False
-                if 'meshes' in gltf_data and len(gltf_data['meshes']) > 0:
-                    prim = gltf_data['meshes'][0]['primitives'][0]
-                    attrs = prim.get('attributes', {})
-                    has_color = 'COLOR_0' in attrs
-
-                self.log_window.log(f"\nВалидация GLB:", "glb")
-                self.log_window.log(f"  Версия: {version}", "glb")
-                self.log_window.log(f"  Размер: {length} bytes", "glb")
-                self.log_window.log(f"  COLOR_0 присутствует: {has_color}", "glb")
-
-                if not has_color:
-                    self.log_window.log("  ⚠️ COLOR_0 ОТСУТСТВУЕТ В GLTF!", "glb")
-                else:
-                    self.log_window.log("  ✅ COLOR_0 найден в mesh attributes", "glb")
-
-                self.log_window.log("  ✅ GLB валиден", "glb")
-
-        except Exception as e:
-            self.log_window.log(f"Ошибка валидации: {e}", "glb")
+        self.main_log_message(f"GLB: {vertex_count:,} вершин, {triangle_count:,} треуг., {total_length/1024/1024:.1f} MB")
 
 
 def main():
