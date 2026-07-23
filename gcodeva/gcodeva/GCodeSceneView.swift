@@ -180,6 +180,8 @@ class GCodeSceneCoordinator: NSObject {
     weak var sceneView: CustomSCNView?
     var lastRenderTrigger: Int = -1
     var lastLightingTrigger: Int = -1
+    var lastShowTravel: Bool = false // 🆕
+    var lastLayerViewLimit: Int = Int.max // 🆕
     var maxDimension: CGFloat = 100.0
     var modelCenterY: CGFloat = 0.0
 }
@@ -256,6 +258,43 @@ struct GCodeSceneView: NSViewRepresentable {
         if context.coordinator.lastLightingTrigger != appState.lightingTrigger {
             context.coordinator.lastLightingTrigger = appState.lightingTrigger
             updateLighting(in: nsView)
+        }
+        // 🆕 Мгновенное переключение видимости холостых ходов (без перестройки геометрии!)
+        if context.coordinator.lastShowTravel != appState.showTravelLines {
+            context.coordinator.lastShowTravel = appState.showTravelLines
+            let isVisible = appState.showTravelLines
+            nsView.scene?.rootNode.enumerateChildNodes { node, _ in
+                if node.name == "travel_line_node" {
+                    node.isHidden = !isVisible
+                }
+            }
+            return
+        }
+        // 🆕 Мгновенное переключение видимости слоев (ползунок)
+        if context.coordinator.lastLayerViewLimit != appState.layerViewLimit {
+            context.coordinator.lastLayerViewLimit = appState.layerViewLimit
+            let limit = appState.layerViewLimit
+            
+            // Ищем контейнер со всеми моделями
+            if let container = nsView.scene?.rootNode.childNode(withName: "gcode_container", recursively: false) {
+                for modelNode in container.childNodes {
+                    // Проверяем каждый слой внутри модели
+                    for layerNode in modelNode.childNodes {
+                        if let name = layerNode.name, name.hasPrefix("layer_") {
+                            if let idStr = name.split(separator: "_").last, let layerId = Int(idStr) {
+                                if limit == Int.max {
+                                    layerNode.isHidden = false // Показать все
+                                } else if limit == -1 {
+                                    layerNode.isHidden = true  // Скрыть все
+                                } else {
+                                    layerNode.isHidden = (layerId > limit) // Скрыть те, что выше лимита
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return
         }
         
         nsView.scene?.rootNode.childNode(withName: "grid", recursively: false)?.isHidden = !appState.showAxis
@@ -453,6 +492,25 @@ struct GCodeSceneView: NSViewRepresentable {
             }
             
             containerNode.addChildNode(modelNode)
+            // 🆕 Отрисовка предрасчитанных труб без экструзии
+            let travelMat = getTravelMaterial()
+            for travelMesh in model.travelMeshes {
+                let tSourceGeo = SCNGeometrySource(vertices: travelMesh.vertices)
+                let tSourceNorm = SCNGeometrySource(normals: travelMesh.normals)
+                let tElement = SCNGeometryElement(indices: travelMesh.indices, primitiveType: .triangles)
+                let travelGeo = SCNGeometry(sources: [tSourceGeo, tSourceNorm], elements: [tElement])
+                travelGeo.materials = [travelMat]
+                
+                let tNode = SCNNode(geometry: travelGeo)
+                tNode.name = "travel_line_node"
+                // Применяем те же позицию и поворот, что и у основной модели
+                tNode.position = SCNVector3(model.position.x, model.position.y, model.position.z)
+                tNode.eulerAngles.y = CGFloat(model.rotationY)
+                tNode.isHidden = !appState.showTravelLines // Учитываем текущее состояние кнопки
+                
+                modelNode.addChildNode(tNode) // Добавляем внутрь modelNode, чтобы удалялось вместе с моделью
+            }
+            
         }
         
         nsView.scene?.rootNode.addChildNode(containerNode)
@@ -683,6 +741,15 @@ struct GCodeSceneView: NSViewRepresentable {
         return lineNode
     }
 
+    // 🆕 Материал для линий без экструзии
+    private func getTravelMaterial() -> SCNMaterial {
+        let mat = SCNMaterial()
+        mat.diffuse.contents = NSColor.systemBlue
+        mat.emission.contents = NSColor.systemBlue.withAlphaComponent(0.8) // Немного подсвечиваем
+        mat.lightingModel = .constant // Не зависим от теней и света
+        return mat
+    }
+    
     private func getMaterial(preset: MaterialPreset, color: NSColor) -> SCNMaterial {
         let mat = SCNMaterial()
         mat.diffuse.contents = color

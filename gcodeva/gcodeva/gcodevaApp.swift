@@ -21,7 +21,7 @@ struct gcodevaApp: App {
                     AppDelegate.shared.appState = appState
                 }
                 .onOpenURL { url in
-                    if url.pathExtension.lowercased() == "gcode" || url.pathExtension.lowercased() == "nc" {
+                    if url.pathExtension.lowercased() == "gcode" {
                         let dir = url.deletingLastPathComponent()
                         appState.currentDirectory = dir
                         appState.loadFilesFromDirectory(dir)

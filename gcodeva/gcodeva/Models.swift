@@ -69,6 +69,7 @@ struct LoadedModel: Identifiable {
     var boundingBox: (min: simd_float3, max: simd_float3)? = nil
     var modelSize: simd_float3 = simd_float3(1, 1, 1)
     var isVisible: Bool = true
+    var travelMeshes: [LayerMesh] = [] // 🆕 Готовая 3D-геометрия труб холостых ходов
     var rotationY: Float = 0 // 🆕 Текущий поворот вокруг оси Y
     var originalExtrusionPoints: Int = 0
     var optimizedExtrusionPoints: Int = 0
@@ -109,6 +110,8 @@ class AppState: ObservableObject {
     @Published var videoWidth: Int = 738
     @Published var videoHeight: Int = 1600
     @Published var showAxis: Bool = true
+    @Published var showTravelLines: Bool = false // 🆕 Показывать синие ходы без экструзии
+    @Published var layerViewLimit: Int = Int.max // 🆕 Лимит видимых слоев (Int.max = показать все, -1 = скрыть все)
     @Published var modelSize: simd_float3 = simd_float3(1,1,1)
     @Published var shouldResetCamera = false
     @Published var parsedTemperatures: [String: Float] = [:]
@@ -140,6 +143,12 @@ class AppState: ObservableObject {
         case .date: return fileItems.sorted { $0.date > $1.date }
         }
     }
+
+    // 🆕 Максимальный номер слоя для ползунка (минимум 1000, чтобы не схлопывался)
+    var maxLayerID: Int {
+        let maxIds = loadedModels.compactMap { $0.processedLayers.last?.id }
+        return max(maxIds.max() ?? 0, 1000)
+    }
     
     func log(_ message: String) {
         DispatchQueue.main.async {
@@ -154,7 +163,7 @@ class AppState: ObservableObject {
             var items: [FileItem] = []
             for fileURL in urls {
                 let ext = fileURL.pathExtension.lowercased()
-                guard ext == "gcode" || ext == "nc" || ext == "ngc" else { continue }
+                guard ext == "gcode" else { continue }
                 let resources = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                 items.append(FileItem(url: fileURL, name: fileURL.lastPathComponent, size: Int64(resources.fileSize ?? 0), date: resources.contentModificationDate ?? Date.distantPast))
             }
@@ -170,7 +179,7 @@ class AppState: ObservableObject {
         log("📂 Start loading: \(file.lastPathComponent)")
         
         DispatchQueue.global(qos: .userInitiated).async {
-            let parseStartTime = CFAbsoluteTimeGetCurrent()
+            var parseStartTime = CFAbsoluteTimeGetCurrent()
             
             let result = GCodeParser.parse(file: file) { progress in
                 DispatchQueue.main.async { self.progress = progress }
@@ -178,7 +187,7 @@ class AppState: ObservableObject {
             let points = result.points
             let temperatures = result.temperatures
             
-            let parseEndTime = CFAbsoluteTimeGetCurrent()
+            var parseEndTime = CFAbsoluteTimeGetCurrent()
             let parseMs = (parseEndTime - parseStartTime) * 1000
             
             var model = LoadedModel(
@@ -187,9 +196,9 @@ class AppState: ObservableObject {
                 points: points,
                 position: simd_float3(0, 0, 0)
             )
-            
+
             self.processGeometryForModel(&model)
-            
+
             DispatchQueue.main.async {
                 self.log("⏱ Total Parse Time: \(String(format: "%.0f", parseMs)) ms")
                 self.log("📊 Points extracted: \(points.count)")
@@ -220,7 +229,6 @@ class AppState: ObservableObject {
             return
         }
         
-        // 🆕 УБРАНА проверка на дубликат. Теперь можно добавлять один и тот же файл много раз.
         
         log("📂 Adding model from list: \(file.lastPathComponent)")
         isLoading = true
@@ -289,8 +297,10 @@ class AppState: ObservableObject {
             return (cos(angle), sin(angle))
         }
         
+        // 1. Предварительная фильтрация точек экструзии
         let extrusionPoints = model.points.filter { $0.isExtrusion }
         guard !extrusionPoints.isEmpty else { return }
+        
         
         let groupedByLayer = Dictionary(grouping: extrusionPoints) { $0.layer }
         
@@ -341,6 +351,43 @@ class AppState: ObservableObject {
             model.boundingBox = (globalMin, globalMax)
             model.modelSize = globalMax - globalMin
         }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // 🆕 ГЕНЕРАЦИЯ ТРУБ ДЛЯ ХОЛОСТЫХ ХОДОВ (БЕЗ ЭКСТРУЗИИ)
+        // ═══════════════════════════════════════════════════════════════
+        var travelSegments: [[simd_float3]] = []
+        var currentTravelSeg: [simd_float3] = []
+        var skipFirstZero = true
+        
+        // Разбиваем холостые ходы на сегменты, чтобы не соединять трубой разорванные пути
+        for point in model.points {
+            if point.isExtrusion {
+                if currentTravelSeg.count > 1 {
+                    travelSegments.append(currentTravelSeg)
+                }
+                currentTravelSeg = []
+            } else {
+                // Пропускаем самую первую точку (0,0,0), чтобы не тянуть линию из ниоткуда
+                if skipFirstZero && point.x == 0 && point.y == 0 && point.z == 0 {
+                    skipFirstZero = false
+                    continue
+                }
+                skipFirstZero = false
+                currentTravelSeg.append(simd_float3(Float(point.x), Float(point.z), -Float(point.y)))
+            }
+        }
+        if currentTravelSeg.count > 1 {
+            travelSegments.append(currentTravelSeg)
+        }
+        
+        // Строим трубы для каждого сегмента (используем текущий diameter и segments)
+        var tMeshes: [LayerMesh] = []
+        for (idx, seg) in travelSegments.enumerated() {
+            if let tubeData = createTubeBuffersOptimized(for: seg, radius: radius, segments: segments, precomputedAngles: angles) {
+                tMeshes.append(LayerMesh(id: 100000 + idx, vertices: tubeData.v, normals: tubeData.n, indices: tubeData.i))
+            }
+        }
+        model.travelMeshes = tMeshes
         
         let originalCount = extrusionPoints.count
         let optimizedCount = model.processedLayers.reduce(0) { $0 + $1.vertices.count / 8 }

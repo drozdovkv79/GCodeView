@@ -47,6 +47,14 @@ struct ContentView: View {
                         systemImage: "move.3d"
                     )
                 }
+                // 🆕 Кнопка показа ходов без экструзии
+                Button(action: { appState.showTravelLines.toggle() }) {
+                    Label(
+                        appState.showTravelLines ? "Hide Travel" : "Show Travel",
+                        systemImage: "highlighter.badge.ellipsis" // Иконка пунктирной линии
+                    )
+                }
+                
             }
         }
         .onAppear {
@@ -160,6 +168,65 @@ struct ContentView: View {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
 
+
+                // 🆕 Визуализация слоев (Ползунок)
+                DisclosureGroup {
+                    VStack(spacing: 10) {
+                        // Вычисляем максимальный номер слоя среди всех загруженных моделей
+                        let maxLayer = appState.loadedModels.flatMap { $0.processedLayers }.map { $0.id }.max() ?? 0
+                        
+                        HStack {
+                            Text("Отображение слоев:")
+                                .font(.caption.bold())
+                            Spacer()
+                            // Логика отображения текста: 0 = все, -1 (в AppState) = скрыты, иначе номер
+                            if appState.layerViewLimit == 0 || maxLayer == 0 {
+                                Text("Все (\(maxLayer))").foregroundColor(.secondary).font(.caption)
+                            } else if appState.layerViewLimit == -1 {
+                                Text("Скрыты").foregroundColor(.red).font(.caption)
+                            } else {
+                                Text("Слой: \(appState.layerViewLimit) / \(maxLayer)").foregroundColor(.blue).font(.caption)
+                            }
+                        }
+                        
+                        Slider(value: Binding(
+                            get: {
+                                // Границы ползунка строго от 0 до maxLayer
+                                if appState.layerViewLimit <= 0 || appState.layerViewLimit >= maxLayer { return Float(maxLayer) }
+                                if appState.layerViewLimit == -1 { return Float(0) } // Если скрыты, двигаем влево
+                                return Float(appState.layerViewLimit)
+                            },
+                            set: { newVal in
+                                // Преобразуем Float обратно в Int
+                                let intVal = Int(newVal)
+                                
+                                if intVal >= maxLayer || maxLayer == 0 {
+                                    appState.layerViewLimit = 0 // Крайний правый предел = показать все
+                                } else if intVal <= 0 {
+                                    appState.layerViewLimit = -1 // Крайний левый предел = скрыть все
+                                } else {
+                                    appState.layerViewLimit = intVal
+                                }
+                            }
+                        ), in: 0...Float(max(maxLayer, 1))) // Строгий диапазон от 0 до максимума
+                        
+                        HStack {
+                            Button("Сбросить (Все)") {
+                                appState.layerViewLimit = 0 // 0 теперь означает "Показать все"
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            
+                            Button("Скрыть слои") {
+                                appState.layerViewLimit = -1
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                        }
+                    }
+                    .padding(.vertical, 5)
+                } label: {
+                    Label("Слои", systemImage: "layers")
+                }
+            
                 DisclosureGroup {
                     materialsContent
                 } label: {
@@ -669,8 +736,8 @@ struct ContentView: View {
             HStack {
                 Slider(
                     value: $appState.tempTubeDiameter,
-                    in: 1.0...10.0,
-                    step: 0.5
+                    in: 0.1...10.0,
+                    step: 0.1
                 )
                 Text(String(format: "%.1f", appState.tempTubeDiameter)).frame(
                     width: 35
@@ -1211,7 +1278,7 @@ struct ContentView: View {
     /// Оптимизированный поиск узлов
     private func findAllGeometryNodes(in node: SCNNode, excludingNames: Set<String>) -> [SCNNode] {
         var result: [SCNNode] = []
-        if node.geometry != nil, node.name.map { !excludingNames.contains($0) } ?? true {
+        if node.geometry != nil, node.name.map({ !excludingNames.contains($0) }) ?? true {
             result.append(node)
         }
         for child in node.childNodes {
